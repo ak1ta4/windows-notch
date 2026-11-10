@@ -60,7 +60,9 @@ function sendShape(w, h) {
     { x: 0, y: 0, width: W, height: BAR_H + 3 },
     { x: (W - w) / 2 - EAR - 3, y: 0, width: w + EAR * 2 + 6, height: h + 4 },
   ];
-  if (S.pop) { const r = $('pop').getBoundingClientRect(); rects.push({ x: r.left - 4, y: 0, width: r.width + 8, height: r.bottom + 6 }); }
+  // Tamaño final del desplegable (offset*, sin la transformación de su animación de entrada): con
+  // getBoundingClientRect se medía encogido al abrir y la forma recortaba sus bordes en recto.
+  if (S.pop) { const p = $('pop'); rects.push({ x: p.offsetLeft - 4, y: 0, width: p.offsetWidth + 8, height: p.offsetTop + p.offsetHeight + 6 }); }
   const k = JSON.stringify(rects);
   if (k !== lastShape) { lastShape = k; notch.shape(rects); }
   shapeW = w; shapeH = h;
@@ -223,6 +225,9 @@ notch.onNative((msg) => {
   if (msg.type === 'tray') { S.tray = msg.list || []; renderTray(); renderBarTray(); return; }
   if (msg.type !== 'state') return;
   const prev = S.sys;
+  // Tras cambiar de idioma a mano, un estado viejo (de antes del cambio) no debe volver a pintar el anterior
+  if (langPending && (msg.lang === langPending.code || Date.now() > langPending.until)) langPending = null;
+  if (langPending) { msg.lang = langPending.code; msg.langName = langPending.name; }
   S.sys = msg;
   if (prev.vol !== undefined && (Math.abs(prev.vol - msg.vol) > 0.001 || prev.mute !== msg.mute) && !S.dragging.vol) showHud();
   const ignore = (S.cfg && S.cfg.mediaIgnore) || ['Claude'];
@@ -449,12 +454,21 @@ function drawBars(canvas, vals, color, gap, mirror) {
     x.beginPath(); x.roundRect(i * (bw + gap), y, bw, h, bw / 2); x.fill();
   }
 }
+// Ritmo del visualizador: a la frecuencia del monitor (144 Hz o más) costaba ~20 % de un núcleo de GPU.
+// 24 fps mientras se ven las barras; 4 por segundo en silencio (solo para notar que vuelve el sonido);
+// 1 por segundo con un juego a pantalla completa, donde el notch ni se ve.
+function nextViz() {
+  const visible = !S.sys.fullscreen && !document.hidden;
+  const drawing = visible && (S.open ? S.view === 'main' : S.audioActive);
+  setTimeout(() => requestAnimationFrame(drawViz), !visible ? 1000 : drawing ? 42 : 250);
+}
 function drawViz() {
-  requestAnimationFrame(drawViz);
+  nextViz();
   viz.analyser.getByteFrequencyData(viz.data);
   const b = bands(32);
   let energy = 0;
-  for (let i = 0; i < b.length; i++) { viz.levels[i] += (b[i] - viz.levels[i]) * 0.45; energy += b[i]; }
+  for (let i = 0; i < b.length; i++) { viz.levels[i] += (b[i] - viz.levels[i]) * 0.7; energy += b[i]; }
+  if (S.sys.fullscreen) { if (S.audioActive) { S.audioActive = false; renderCompact(); } return; }
   const now = performance.now();
   const active = energy / b.length > 0.04;
   if (active) viz.silentSince = 0; else if (!viz.silentSince) viz.silentSince = now;
@@ -894,9 +908,17 @@ $('barVol').addEventListener('wheel', volWheel, { passive: true });
 $('barLang').onclick = () => {
   if (!S.layouts.length) return;
   const i = S.layouts.findIndex((l) => l.code === S.sys.lang);
-  const next = S.layouts[(i + 1) % S.layouts.length];
-  notch.native({ cmd: 'layout', hkl: next.hkl });
+  switchLayout(S.layouts[(i + 1) % S.layouts.length]);
 };
+// Cambio de idioma: se pide al helper y se pinta ya, sin esperar a que el sistema lo confirme
+let langPending = null;
+function switchLayout(l) {
+  if (!l) return;
+  notch.native({ cmd: 'layout', hkl: l.hkl });
+  langPending = { code: l.code, name: l.name, until: Date.now() + 2000 };
+  S.sys = { ...S.sys, lang: l.code, langName: l.name };
+  renderBar(); renderLayouts();
+}
 
 // ============ Energía / tema / acciones ============
 async function loadPlans() { renderPlans(await notch.powerPlans()); }
@@ -924,7 +946,7 @@ document.addEventListener('click', async (e) => {
   if (d.launch) { notch.launch(d.launch); setOpen(false); }
   if (d.folder !== undefined) { notch.openFolder(+d.folder); setOpen(false); }
   if (d.plan) renderPlans(await notch.setPowerPlan(d.plan));
-  if (d.hkl) { notch.native({ cmd: 'layout', hkl: d.hkl }); setTimeout(renderLayouts, 600); }
+  if (d.hkl) switchLayout(S.layouts.find((l) => l.hkl === d.hkl));
   if (d.todoToggle) applyTodos(await notch.todoToggle(d.todoToggle));
   if (d.todoDel) applyTodos(await notch.todoDelete(d.todoDel));
   if (d.power) {

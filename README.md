@@ -8,6 +8,11 @@ con reproductor, bandeja del sistema, estadísticas, tareas, buscador de apps y 
 Pensado para pantallas OLED (negro puro con un borde sutil) y para convivir con el gestor de ventanas en mosaico
 [GlazeWM](https://github.com/glzr-io/glazewm).
 
+https://github.com/user-attachments/assets/70959ef5-7c3f-47dd-a754-6bbfd40e3c41
+
+*El notch en uso: reproductor y calendario, energía, tareas, buscador (Ctrl+Q), Claude Code, idioma del teclado,
+estadísticas, bandeja y el desplegable de sonido.*
+
 Hecho con **Electron** y un helper nativo en **Windows PowerShell 5.1** (C# compilado al vuelo con WinRT, CoreAudio
 y Win32). No necesita compilar nada ni instalar herramientas de desarrollo: solo Node.js.
 
