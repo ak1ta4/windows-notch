@@ -90,8 +90,9 @@ Un lanzador al estilo Spotlight/Flow Launcher dentro del notch:
 - Opcional:
   - [GlazeWM](https://github.com/glzr-io/glazewm) para el mosaico de ventanas.
   - [Claude Code](https://claude.com/claude-code) para la integración con Claude.
-  - Un agente local con estadísticas y tareas en `http://127.0.0.1:47800` (ver [Configuración](#configuración)).
-    Sin él, la barra y el panel funcionan igual pero sin la pestaña Sistema ni las tareas.
+  - [homepage-dashboard](https://github.com/ak1ta4/homepage-dashboard) para las estadísticas del sistema, la red y
+    las tareas (ver [Estadísticas y tareas](#estadísticas-y-tareas-homepage-dashboard)). Sin él, la barra y el panel
+    funcionan igual pero sin la pestaña Sistema, las velocidades de red ni las tareas.
 
 ---
 
@@ -161,7 +162,7 @@ Tras cambiarlo, recarga el notch (clic derecho → Recargar) o reinícialo para 
 | `mediaIgnore` | `["Claude"]` | Apps cuyo audio no se muestra como "lo que suena" |
 | `appBar` | `true` | Reservar la franja superior para que las ventanas no la tapen |
 | `appBarHeight` | `42` | Alto reservado, en píxeles lógicos |
-| `homeServer` | `http://127.0.0.1:47800` | Agente local de estadísticas y tareas |
+| `homeServer` | `http://127.0.0.1:47800` | Dirección del agente de [homepage-dashboard](https://github.com/ak1ta4/homepage-dashboard) |
 | `artworkLookup` | `true` | Buscar la carátula en iTunes si la app no la da (envía artista y título a Apple) |
 | `tray` | `true` | Copiar los iconos de la bandeja del sistema |
 | `barTrayPins` | `[]` | Iconos fijados en la barra (se rellena desde la pestaña Bandeja) |
@@ -170,13 +171,39 @@ Tras cambiarlo, recarga el notch (clic derecho → Recargar) o reinícialo para 
 | `rimStrength` | `1` | Intensidad del borde: `0.5` suave, `1` normal, `2` marcado |
 | `claudeCli` | `""` | Ruta a `claude.exe` para "Pregúntale a Claude" (vacío = `~/.local/bin/claude.exe`) |
 
-### Agente de estadísticas y tareas (`homeServer`)
-La pestaña Sistema, las velocidades de red de la barra y las tareas leen de un servidor HTTP local:
-- `GET /api/stats` → CPU, GPU, RAM, red (bytes/s), discos y procesos.
-- `GET /api/data` y `PUT /api/data` (cabecera `X-Home: 1`) → `{ todos: [{ id, text, done, created, due, notified }] }`,
-  con `due` en formato `YYYY-MM-DDTHH:MM`.
+### Estadísticas y tareas (homepage-dashboard)
+La pestaña Sistema, las velocidades de red de la barra y las tareas vienen del agente de
+**[homepage-dashboard](https://github.com/ak1ta4/homepage-dashboard)** (`server.py`), el mismo que alimenta la
+página de inicio del navegador y el wallpaper. Así las tareas son las mismas en los tres sitios.
 
-Si no tienes ese servidor, esas partes simplemente no aparecen.
+Instálalo siguiendo su README. En resumen:
+
+```bash
+git clone https://github.com/ak1ta4/homepage-dashboard.git
+cd homepage-dashboard
+python -m pip install --target .deps -r requirements.txt
+python server.py
+```
+
+y, para que arranque con Windows, `powershell -NoProfile -ExecutionPolicy Bypass -File .\install-autostart.ps1`.
+Escucha solo en `127.0.0.1:47800`, que es el valor por defecto de `homeServer`.
+
+Lo que usa el notch:
+
+| Petición | Para qué |
+|----------|----------|
+| `GET /api/stats` | CPU por núcleo, GPU, VRAM, RAM, red (bytes/s), discos y procesos. La barra lo pide cada 3 s |
+| `GET /api/data` | Leer las tareas: `{ todos: [{ id, text, done, created, due, notified, doneAt }] }`, con `due` en formato `YYYY-MM-DDTHH:MM` |
+| `PUT /api/data` | Guardar las tareas. El notch lee los datos, cambia solo la tarea afectada y los vuelve a escribir, así no pisa los marcadores ni los campos que gestiona el servidor (`notified`, `doneAt`) |
+
+Las peticiones llevan la cabecera `X-Home: 1`, que el servidor exige para escribir. La pestaña Sistema tiene un botón
+para abrir el dashboard en el navegador, y la de Tareas también cuando hay más de 8.
+
+Si el servidor no está en marcha, esas partes simplemente no aparecen. Si lo tienes en otro puerto, cambia
+`homeServer` en `config.json`.
+
+> **Recordatorios:** el servidor también avisa de las tareas que vencen (con su propia ventana emergente). Si no
+> quieres el aviso doble, desactiva el sonido del notch con `chime: false`.
 
 ---
 
