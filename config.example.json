@@ -1,0 +1,37 @@
+{
+  "label": "秋田",
+  "clock24h": true,
+  "folders": [
+    {
+      "title": "Inicio",
+      "path": "~"
+    },
+    {
+      "title": "Descargas",
+      "path": "~\\Downloads"
+    },
+    {
+      "title": "Documentos",
+      "path": "~\\Documents"
+    },
+    {
+      "title": "Imágenes",
+      "path": "~\\Pictures"
+    }
+  ],
+  "chime": true,
+  "mediaIgnore": [
+    "Claude"
+  ],
+  "appBar": true,
+  "appBarHeight": 42,
+  "homeServer": "http://127.0.0.1:47800",
+  "artworkLookup": true,
+  "collapseDelay": 1200,
+  "tray": true,
+  "launcherHotkey": "Ctrl+Q",
+  "barTrayPins": [],
+  "rim": true,
+  "rimStrength": 1,
+  "claudeCli": ""
+}
