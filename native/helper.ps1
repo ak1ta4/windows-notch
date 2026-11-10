@@ -224,7 +224,8 @@ public class AppBar : NativeWindow {
         a.CreateHandle(cp);
         a.cbMsg = RegisterWindowMessage("NotchAppBarMessage");
         var d = a.Data(); d.uCallbackMessage = a.cbMsg;
-        SHAppBarMessage(0 /*ABM_NEW*/, ref d);
+        var okNew = SHAppBarMessage(0 /*ABM_NEW*/, ref d);
+        Diag("appbar new=" + okNew);
         a.registered = true;
         a.SetPos();
         lock (gate) inst = a;
@@ -247,9 +248,12 @@ public class AppBar : NativeWindow {
     var d = Data();
     d.rc = new RECT { L = mon.L, T = mon.T, R = mon.R, B = mon.T + height };
     SHAppBarMessage(2 /*ABM_QUERYPOS*/, ref d);
+    int qT = d.rc.T, qB = d.rc.B;
     d.rc.B = d.rc.T + height;
     SHAppBarMessage(3 /*ABM_SETPOS*/, ref d);
+    Diag("appbar setpos pedido=" + mon.T + ".." + (mon.T + height) + " query=" + qT + ".." + qB + " final=" + d.rc.T + ".." + d.rc.B);
   }
+  static void Diag(string s) { try { Console.Out.WriteLine("{\"type\":\"diag\",\"msg\":\"" + s + "\"}"); Console.Out.Flush(); } catch { } }
   protected override void WndProc(ref Message m) {
     if (m.Msg == 0x8001) { SetPos(); return; }
     if (m.Msg == 0x8002) { DestroyHandle(); Application.ExitThread(); return; }
@@ -574,6 +578,11 @@ public static class Notch {
           var m = System.Text.RegularExpressions.Regex.Match(l, "\"key\":\"((?:[^\"\\\\]|\\\\.)*)\".*?\"button\":\"(\\w+)\"");
           if (m.Success) { try { Tray.Click(System.Text.RegularExpressions.Regex.Unescape(m.Groups[1].Value), m.Groups[2].Value); } catch { } continue; }
         }
+        // Igual con el cambio de idioma: sin esperar al bucle se nota al instante.
+        if (l.IndexOf("\"layout\"") >= 0) {
+          var m = System.Text.RegularExpressions.Regex.Match(l, "\"hkl\":\"([0-9A-Fa-f]+)\"");
+          if (m.Success) { try { SetLayout(m.Groups[1].Value); } catch { } continue; }
+        }
         cmds.Enqueue(l);
       }
       AppBar.Stop();            // libera la franja reservada
@@ -638,7 +647,9 @@ public static class Notch {
   public static void Poll() {
     var h = GetForegroundWindow();
     uint pid; GetWindowThreadProcessId(h, out pid);
-    if (h != IntPtr.Zero && pid != NotchPid) lastExt = h;
+    // Solo ventanas visibles de otras apps: al hacer clic en un icono de la bandeja la app pone delante
+    // una ventana oculta suya, y las del propio helper (bandeja falsa, AppBar) tampoco cuentan.
+    if (h != IntPtr.Zero && pid != NotchPid && pid != SelfPid && IsWindowVisible(h)) lastExt = h;
     if (lastExt != IntPtr.Zero && !IsWindow(lastExt)) lastExt = IntPtr.Zero;
 
     var w = lastExt;
@@ -731,8 +742,23 @@ public static class Notch {
   }
   public static void SetLayout(string hklHex) {
     long hkl; if (!long.TryParse(hklHex, NumberStyles.HexNumber, null, out hkl)) return;
-    if (lastExt != IntPtr.Zero) PostMessage(lastExt, 0x0050 /*WM_INPUTLANGCHANGEREQUEST*/, IntPtr.Zero, new IntPtr(hkl));
+    // Destino: la ventana en primer plano si es de otra app; si no (el notch tiene el foco), la última.
+    var fg = GetForegroundWindow(); uint fpid; GetWindowThreadProcessId(fg, out fpid);
+    var target = (fg != IntPtr.Zero && fpid != NotchPid && fpid != SelfPid && IsWindowVisible(fg)) ? fg : lastExt;
+    if (target != IntPtr.Zero) { var root = GetAncestor(target, 3 /*GA_ROOTOWNER*/); if (root != IntPtr.Zero) target = root; }
+    var c = new StringBuilder(64); if (target != IntPtr.Zero) GetClassName(target, c, 64);
+    var cs = c.ToString();
+    // El escritorio y la barra de tareas ignoran la petición: entonces se manda a todas las ventanas
+    // (con la distribución común a todas las apps, que es lo normal en Windows, equivale a cambiarla).
+    if (target == IntPtr.Zero || cs == "Progman" || cs == "WorkerW" || cs == "Shell_TrayWnd" || cs == "Shell_SecondaryTrayWnd") {
+      target = new IntPtr(0xFFFF); /*HWND_BROADCAST*/ c = new StringBuilder("todas (" + cs + ")");
+    }
+    bool ok = PostMessage(target, 0x0050 /*WM_INPUTLANGCHANGEREQUEST*/, IntPtr.Zero, new IntPtr(hkl));
+    // Ventanas de apps elevadas (p. ej. el Administrador de tareas) rechazan el mensaje: a todas
+    if (!ok && target != new IntPtr(0xFFFF)) { ok = PostMessage(new IntPtr(0xFFFF), 0x0050, IntPtr.Zero, new IntPtr(hkl)); c.Append(" -> todas"); }
+    try { Console.Out.WriteLine("{\"type\":\"diag\",\"msg\":\"layout " + hklHex + " -> " + c + " ok=" + ok + "\"}"); Console.Out.Flush(); } catch { }
   }
+  [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint f);
 
   // ---------- Spotify sin controles multimedia de Windows ----------
   // Igual que el agente del home-dashboard: su ventana se llama "Artista - Canción" mientras suena
@@ -938,7 +964,9 @@ $script:force = $true
 while ($true) {
   while ($null -ne ($l = [Notch]::Next())) { Handle $l }
   [Notch]::Poll()
-  if ($script:force -or ($tick % 2 -eq 0)) { $script:media = Get-Media }
+  # Con un juego a pantalla completa el notch está apartado: se sondea mucho menos (ver el Start-Sleep)
+  $fs = [Notch]::Fullscreen
+  if ($script:force -or ((-not $fs) -and ($tick % 4 -eq 0)) -or ($fs -and ($tick % 5 -eq 0))) { $script:media = Get-Media }
   if ([Tray]::Dirty -and ($tick % 2 -eq 0)) { [Console]::Out.WriteLine('{"type":"tray","list":' + [Tray]::Snapshot() + '}'); [Console]::Out.Flush() }
   if ([Notch]::FsDiag) { Emit @{ type = 'diag'; msg = 'fullscreen ' + [Notch]::FsDiag }; [Notch]::FsDiag = $null }
   if ($tick % 20 -eq 0) {
@@ -961,5 +989,5 @@ while ($true) {
   if ($json -ne $last) { [Console]::Out.WriteLine($json); [Console]::Out.Flush(); $last = $json }
   $script:force = $false
   $tick++
-  Start-Sleep -Milliseconds 250
+  if ($fs) { Start-Sleep -Milliseconds 1000 } else { Start-Sleep -Milliseconds 250 }
 }

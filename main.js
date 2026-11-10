@@ -124,11 +124,44 @@ function applyShape(rects) {
 }
 function startMouseTracking() {
   // Vigilante: otras ventanas "siempre encima" pueden quedar por delante; se reafirma cada poco.
+  // Excepción: con la Herramienta Recortes abierta el notch se queda por debajo de ella (si no, tapa
+  // su barra de tipos de recorte, que sale justo arriba en el centro).
+  let yielding = false, tick = 0;
   setInterval(() => {
+    tick++;
     if (!win || win.isDestroyed() || !win.isVisible()) return;
+    if (snipOverlayOpen()) {
+      if (!yielding) { yielding = true; win.setAlwaysOnTop(false); log('cediendo a Recortes'); }
+      return;
+    }
+    if (yielding) { yielding = false; tick = 0; log('Recortes cerrado'); }
+    else if (tick % 4) return; // reafirmar cada ~1,6 s; mirar Recortes cada 0,4 s
+    if (tick % 20 === 0) checkReservedSpace(); // cada ~8 s
     win.setAlwaysOnTop(true, 'screen-saver');
     win.moveTop();
-  }, 1500);
+  }, 400);
+}
+// A veces Windows se queda con una franja reservada más corta de la pedida (se vio con 42 px físicos
+// en vez de 63 a escala 150 %): las ventanas suben y la lengüeta del notch tapa su borde superior.
+// Si pasa, se vuelve a pedir la reserva.
+function checkReservedSpace() {
+  if (!config.appBar || !helper || hiddenForFullscreen) return;
+  const api = fgApi(); if (!api || !api.WorkTop) return;
+  const d = screen.getPrimaryDisplay();
+  const want = Math.round((d.bounds.y + config.appBarHeight) * d.scaleFactor);
+  let top; try { top = api.WorkTop(); } catch { return; }
+  if (top == null || top >= want) { shortCount = 0; return; }
+  shortCount++;
+  log('reserva corta', { top, want, intento: shortCount });
+  // Volver a pedir la posición no siempre basta (se vio quedarse en 0 durante minutos): al segundo
+  // intento se da de baja la franja y se registra de nuevo.
+  if (shortCount >= 2) { helperCmd({ cmd: 'appbar', on: false }); setTimeout(reserveSpace, 500); shortCount = 0; }
+  else reserveSpace();
+}
+let shortCount = 0;
+function snipOverlayOpen() {
+  const api = fgApi(); if (!api) return false;
+  try { const h = api.FindWindowW('SnipOverlayRootWindow', null); return !!h && api.IsWindowVisible(h); } catch { return false; }
 }
 // Clic en cualquier sitio de la pantalla con el panel abierto: si fue fuera de la isla, se cierra.
 let panelOpen = false;
@@ -186,6 +219,18 @@ function fgApi() {
       GetWindowThreadProcessId: u.func('__stdcall', 'GetWindowThreadProcessId', 'uint32', ['intptr', 'void *']),
       AttachThreadInput: u.func('__stdcall', 'AttachThreadInput', 'bool', ['uint32', 'uint32', 'bool']),
       GetCurrentThreadId: k.func('__stdcall', 'GetCurrentThreadId', 'uint32', []),
+      FindWindowW: u.func('__stdcall', 'FindWindowW', 'intptr', ['str16', 'str16']),
+      IsWindowVisible: u.func('__stdcall', 'IsWindowVisible', 'bool', ['intptr']),
+      AllowSetForegroundWindow: u.func('__stdcall', 'AllowSetForegroundWindow', 'bool', ['uint32']),
+      GetWindow: u.func('__stdcall', 'GetWindow', 'intptr', ['intptr', 'uint32']),
+      SetWindowPos: u.func('__stdcall', 'SetWindowPos', 'bool', ['intptr', 'intptr', 'int', 'int', 'int', 'int', 'uint32']),
+      GetWindowLongW: u.func('__stdcall', 'GetWindowLongW', 'int32', ['intptr', 'int']),
+      // Área de trabajo de la pantalla principal (en píxeles físicos: Electron es consciente del DPI)
+      WorkTop: (() => {
+        const R = koffi.struct('NotchRect', { l: 'int', t: 'int', r: 'int', b: 'int' });
+        const spi = u.func('__stdcall', 'SystemParametersInfoW', 'bool', ['uint', 'uint', koffi.out(koffi.pointer(R)), 'uint']);
+        return () => { const r = {}; return spi(0x30 /*SPI_GETWORKAREA*/, 0, r, 0) ? r.t : null; };
+      })(),
     };
   } catch (e) { log('primer plano: koffi no disponible', e.message); fg = false; }
   return fg;
@@ -205,19 +250,92 @@ function takeForeground() {
   if (!ok) log('primer plano: Windows lo negó');
   win.focus(); // ya en primer plano: solo da el foco de teclado a la página
 }
+// Al abrir algo desde el buscador, el primer plano es para la app que se abre: si se devolviera a la
+// ventana anterior, Windows le negaría a la nueva ponerse delante y la barra de tareas oculta saltaría
+// avisando. Se le da permiso y se espera a que la app lo tome (o, si no aparece, se devuelve a los 8 s).
+let launchingUntil = 0;
+function handForegroundToLaunch() {
+  const api = fgApi(); if (!api) return;
+  try { api.AllowSetForegroundWindow(0xFFFFFFFF /*ASFW_ANY*/); } catch {}
+  launchingUntil = Date.now() + 8000; // las apps de la Store tardan ~3 s en abrir en frío
+}
+// Soltar el foco SIEMPRE en este orden: primero se devuelve el primer plano a otra ventana y solo después
+// la del notch deja de aceptar foco. Al revés (como estaba), win.setFocusable(false) suelta el primer plano
+// sin dárselo a nadie, Windows se lo da a la barra de tareas y la oculta asoma (pasaba al escribir en el
+// notch, con los menús de la bandeja y con el menú contextual).
 function giveBackForeground() {
   const api = fgApi();
   const prev = prevForeground; prevForeground = 0n;
-  if (!api) { win.blur(); return; }
-  // Si ya pasaste a otra ventana (clic fuera), no se le quita el foco
-  if (BigInt(api.GetForegroundWindow()) !== BigInt(win.getNativeWindowHandle().readBigUInt64LE(0))) return;
-  if (prev && api.IsWindow(prev) && api.SetForegroundWindow(prev)) return;
-  win.blur();
+  if (!api) return null;
+  const me = BigInt(win.getNativeWindowHandle().readBigUInt64LE(0));
+  // Si ya pasaste a otra ventana (clic fuera, menú de una app), no se le quita el foco
+  const cur = BigInt(api.GetForegroundWindow());
+  if (cur !== me) return cur || null;
+  if (prev && api.IsWindow(prev) && api.IsWindowVisible(prev) && api.SetForegroundWindow(prev)) return prev;
+  // Sin ventana anterior: la primera ventana visible por debajo del notch (como mínimo, el escritorio)
+  for (let h = api.GetWindow(me, 2 /*GW_HWNDNEXT*/); h; h = api.GetWindow(h, 2)) {
+    if (!api.IsWindowVisible(h)) continue;
+    const ex = api.GetWindowLongW(h, -20 /*GWL_EXSTYLE*/);
+    if (ex & (0x80 | 0x08000000)) continue; // TOOLWINDOW / NOACTIVATE
+    if (api.SetForegroundWindow(h)) return BigInt(h);
+  }
+  const desk = api.FindWindowW('Progman', null); if (desk && api.SetForegroundWindow(desk)) return BigInt(desk);
+  return null;
+}
+// win.setFocusable() de Electron, en Windows, además de cambiar el estilo llama a Focus(false), que pone en
+// primer plano la SIGUIENTE ventana visible en el orden de apilado. Como el notch está siempre encima,
+// esa ventana suele ser la barra de tareas: se activa y la oculta asoma. Cada vez que el notch empezaba
+// o dejaba de aceptar foco (escribir, menús de la bandeja, menú contextual) pasaba esto.
+// Arreglo: justo antes, el notch se coloca en el apilado inmediatamente encima de la ventana que debe
+// quedarse con el foco, así "la siguiente" es esa; justo después vuelve a estar por encima de todo.
+function setFocusableSafe(on, keep) {
+  if (!win || win.isDestroyed()) return;
+  if (win.isFocusable() === on) return;
+  const api = fgApi();
+  if (!api) { win.setFocusable(on); return; }
+  const me = BigInt(win.getNativeWindowHandle().readBigUInt64LE(0));
+  const SWP = 0x0001 | 0x0002 | 0x0010; // NOSIZE | NOMOVE | NOACTIVATE
+  let target = keep != null ? BigInt(keep) : BigInt(api.GetForegroundWindow());
+  if (target === me) target = 0n;
+  try {
+    if (target && api.IsWindow(target)) {
+      const above = BigInt(api.GetWindow(target, 3 /*GW_HWNDPREV*/));
+      if (above === me) { /* ya está justo encima */ }
+      else if (above) api.SetWindowPos(me, above, 0, 0, 0, 0, SWP);  // queda entre "above" y target
+      else { api.SetWindowPos(me, -2 /*HWND_NOTOPMOST*/, 0, 0, 0, 0, SWP); api.SetWindowPos(me, 0 /*HWND_TOP*/, 0, 0, 0, 0, SWP); }
+    } else {
+      api.SetWindowPos(me, 1 /*HWND_BOTTOM*/, 0, 0, 0, 0, SWP); // sin destino: que no haya "siguiente"
+    }
+  } catch (e) { log('apilado: falló', e.message); }
+  win.setFocusable(on);
+  win.setSkipTaskbar(true);
+  try { api.SetWindowPos(me, -1 /*HWND_TOPMOST*/, 0, 0, 0, 0, SWP); } catch {}
+  win.setAlwaysOnTop(true, 'screen-saver');
+}
+function releaseFocus() {
+  if (!win || win.isDestroyed()) return;
+  const to = giveBackForeground(); // la ventana que se queda con el foco
+  setFocusableSafe(false, to);
 }
 function setFocusable(on) {
   if (!win || win.isDestroyed()) return;
-  win.setFocusable(on);
-  if (on) takeForeground(); else giveBackForeground();
+  // Abriendo algo desde el buscador: se espera a que la app nueva se ponga delante y solo entonces se
+  // deja de aceptar el foco (si se devolviera a la ventana de antes, a la nueva se le negaría).
+  if (!on && Date.now() < launchingUntil) { waitLaunchThenRelease(); return; }
+  if (on) { setFocusableSafe(true); takeForeground(); } else releaseFocus();
+}
+function waitLaunchThenRelease() {
+  const api = fgApi(); if (!api) { launchingUntil = 0; setFocusable(false); return; }
+  const me = BigInt(win.getNativeWindowHandle().readBigUInt64LE(0));
+  try { api.AllowSetForegroundWindow(0xFFFFFFFF /*ASFW_ANY*/); } catch {}
+  const check = () => {
+    if (!win || win.isDestroyed()) return;
+    const cur = BigInt(api.GetForegroundWindow());
+    if (cur !== me && cur !== 0n) { launchingUntil = 0; prevForeground = 0n; setFocusableSafe(false, cur); return; } // la app ya está delante: soltar sin más
+    if (Date.now() < launchingUntil) { setTimeout(check, 100); return; }
+    launchingUntil = 0; setFocusable(false); // no apareció: se devuelve a la ventana de antes
+  };
+  setTimeout(check, 100);
 }
 
 // ---------------- Reserva de espacio (AppBar) ----------------
@@ -226,6 +344,7 @@ function reserveSpace() {
   if (!config.appBar) { helperCmd({ cmd: 'appbar', on: false }); return; }
   const d = screen.getPrimaryDisplay();
   const s = d.scaleFactor;
+  log('reserva', { bounds: d.bounds, scale: s, h: Math.round(config.appBarHeight * s) });
   helperCmd({
     cmd: 'appbar', on: true,
     l: Math.round(d.bounds.x * s), t: Math.round(d.bounds.y * s),
@@ -497,10 +616,11 @@ ipcMain.on('tray-click', (_e, { key, button }) => {
   // El notch se activa un instante y el helper (hijo suyo) cede el primer plano a la app del icono;
   // si no, su menú no aparece delante o no se cierra al hacer clic fuera.
   const wasFocusable = win.isFocusable();
-  if (!wasFocusable) win.setFocusable(true);
+  if (!wasFocusable) setFocusableSafe(true);
   takeForeground();
   setTimeout(() => helperCmd({ cmd: 'trayclick', key, button }), 60);
-  if (!wasFocusable) setTimeout(() => { if (!hold && win && !win.isDestroyed()) win.setFocusable(false); }, 1500); // sin blur: no quitar el foco a la app
+  // Si el icono no abrió nada y el notch sigue delante, se devuelve el foco antes de soltarlo
+  if (!wasFocusable) setTimeout(() => { if (!hold) releaseFocus(); }, 1500);
 });
 
 // ---------------- "Pregúntale a Claude" (claude -p, sin herramientas) ----------------
@@ -571,7 +691,7 @@ ipcMain.on('context-menu', () => {
   // Un menú de Windows solo se cierra al hacer clic fuera si su ventana está en primer plano,
   // y la del notch no acepta foco: se lo damos mientras el menú está abierto.
   const wasFocusable = win.isFocusable();
-  if (!wasFocusable) win.setFocusable(true);
+  if (!wasFocusable) setFocusableSafe(true);
   takeForeground();
   Menu.buildFromTemplate([
     { label: 'Recargar notch', click: () => win.reload() },
@@ -579,7 +699,7 @@ ipcMain.on('context-menu', () => {
     { label: 'Abrir config.json', click: () => shell.openPath(path.join(__dirname, 'config.json')) },
     { type: 'separator' },
     { label: 'Salir', click: () => { app.isQuitting = true; app.quit(); } },
-  ]).popup({ window: win, callback: () => { if (!wasFocusable && !hold && win && !win.isDestroyed()) win.setFocusable(false); } });
+  ]).popup({ window: win, callback: () => { if (!wasFocusable && !hold) releaseFocus(); } });
 });
 
 // ---------------- Arranque ----------------
@@ -618,8 +738,16 @@ function startSearcher() {
   });
   searcher.on('exit', () => { searcher = null; searchBuf = ''; for (const w of searchWaiters.values()) w([]); searchWaiters.clear(); });
 }
-function searchCmd(o) {
+// El proceso del buscador (~80 MB) solo vive mientras se usa: arranca al abrir el buscador y se cierra
+// tras 3 minutos sin peticiones.
+let searcherIdle = 0;
+function touchSearcher() {
   if (!searcher) startSearcher();
+  clearTimeout(searcherIdle);
+  searcherIdle = setTimeout(() => { if (searcher && !searchWaiters.size) { try { searcher.stdin.end(); } catch {} } }, 3 * 60 * 1000);
+}
+function searchCmd(o) {
+  touchSearcher();
   try { searcher.stdin.write(JSON.stringify(o) + '\n'); } catch {}
 }
 
@@ -655,7 +783,7 @@ function refreshLauncherIndex() {
   searchCmd({ cmd: 'apps' });
 }
 
-ipcMain.handle('launcher-index', () => ({ ...launcherIndex, usage }));
+ipcMain.handle('launcher-index', () => { touchSearcher(); return { ...launcherIndex, usage }; }); // se abre el buscador: ir arrancando
 ipcMain.handle('launcher-files', (_e, q) => new Promise((resolve) => {
   q = String(q || '').trim().slice(0, 100);
   if (q.length < 2) return resolve([]);
@@ -670,6 +798,7 @@ ipcMain.handle('launcher-open', (_e, it) => {
   usage[key] = (usage[key] || 0) + 1;
   fs.writeFile(userFile('launcher-usage.json'), JSON.stringify(usage), () => {});
   log('buscador abre', key);
+  handForegroundToLaunch();
   if (it.type === 'app' && typeof it.id === 'string') {
     spawn('explorer.exe', [`shell:AppsFolder\\${it.id}`], { detached: true, stdio: 'ignore' }).unref();
   } else if (it.type === 'game' && /^\d+$/.test(String(it.id))) {
@@ -679,7 +808,7 @@ ipcMain.handle('launcher-open', (_e, it) => {
   } else return false;
   return true;
 });
-ipcMain.handle('launcher-reveal', (_e, p) => { if (typeof p === 'string') shell.showItemInFolder(p); });
+ipcMain.handle('launcher-reveal', (_e, p) => { if (typeof p === 'string') { handForegroundToLaunch(); shell.showItemInFolder(p); } });
 
 function registerLauncherHotkey() {
   const key = config.launcherHotkey || 'Alt+S';
