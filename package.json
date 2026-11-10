@@ -1,0 +1,22 @@
+{
+  "name": "akita-notch",
+  "version": "0.1.0",
+  "description": "Notch tipo Dynamic Island para Windows 11: barra superior, panel, bandeja, buscador e integración con Claude Code",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "hooks:install": "node hooks/install.js"
+  },
+  "devDependencies": {
+    "electron": "^45.2.3"
+  },
+  "dependencies": {
+    "koffi": "^2.16.3"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ak1ta4/windows-notch.git"
+  }
+}

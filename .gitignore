@@ -1,0 +1,5 @@
+node_modules/
+# Configuración personal (se crea sola al arrancar; ver config.example.json)
+config.json
+*.log
+yasb-autostart-backup.txt
