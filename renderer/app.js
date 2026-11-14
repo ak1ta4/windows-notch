@@ -697,7 +697,6 @@ function renderTray() {
     || '<div class="empty">Cargando iconos de la bandeja…<br>Si no aparece ninguno, revisa que "tray" esté activado en config.json.</div>';
   resize();
 }
-let trayTimer = 0;
 // Chincheta: fija / quita el icono de la barra (y no abre la app)
 $('trayGrid').addEventListener('click', async (e) => {
   const p = e.target.closest('[data-pin]'); if (!p) return;
@@ -710,16 +709,7 @@ $('trayGrid').addEventListener('click', async (e) => {
   renderTray(); renderBarTray();
 }, true);
 $('trayGrid').addEventListener('dblclick', (e) => { if (e.target.closest('[data-pin]')) e.stopPropagation(); }, true);
-$('trayGrid').addEventListener('click', (e) => {
-  const b = e.target.closest('[data-tray]'); if (!b) return;
-  clearTimeout(trayTimer);
-  trayTimer = setTimeout(() => { notch.trayClick(b.dataset.tray, 'left'); setOpen(false); }, 260);
-});
-$('trayGrid').addEventListener('dblclick', (e) => {
-  const b = e.target.closest('[data-tray]'); if (!b) return;
-  clearTimeout(trayTimer);
-  notch.trayClick(b.dataset.tray, 'double'); setOpen(false);
-});
+// En el panel: clic al soltar sobre el mismo icono (ver trayClicks, más abajo); la chincheta no cuenta
 $('trayGrid').addEventListener('contextmenu', (e) => {
   const b = e.target.closest('[data-tray]'); if (!b) return;
   e.preventDefault(); e.stopPropagation();
@@ -810,21 +800,38 @@ function renderBarTray() {
   // Solo los que has fijado (en el orden en que los fijaste); la flecha abre la bandeja completa.
   const pins = (S.cfg && S.cfg.barTrayPins) || [];
   const shown = pins.map((p) => S.tray.find((t) => t.pin === p)).filter(Boolean);
-  $('barTray').innerHTML = shown.map((t) => `<button class="bar-tray-item" data-tray="${esc(t.key)}" title="${esc(t.tip || t.exe)}">${t.icon ? `<img src="${t.icon}" alt="">` : esc((t.exe || '?')[0])}</button>`).join('')
+  const html = shown.map((t) => `<button class="bar-tray-item" data-tray="${esc(t.key)}" title="${esc(t.tip || t.exe)}">${t.icon ? `<img src="${t.icon}" alt="">` : esc((t.exe || '?')[0])}</button>`).join('')
     + `<button class="bar-tray-item more-tray" data-open-view="tray" title="Bandeja (${S.tray.length}) · fija aquí los que quieras">${icon('chevron')}</button>`;
+  // Solo se repinta si algo cambió: repintar entre el pulsar y el soltar hacía que el clic se perdiera
+  if (html === lastBarTrayHtml) return;
+  lastBarTrayHtml = html;
+  $('barTray').innerHTML = html;
   scheduleFit();
 }
-// Clics en la barra
-let barTrayTimer = 0;
-$('barTray').addEventListener('click', (e) => {
-  const b = e.target.closest('[data-tray]'); if (!b) return;
-  clearTimeout(barTrayTimer);
-  barTrayTimer = setTimeout(() => notch.trayClick(b.dataset.tray, 'left'), 260);
-});
-$('barTray').addEventListener('dblclick', (e) => {
-  const b = e.target.closest('[data-tray]'); if (!b) return;
-  clearTimeout(barTrayTimer); notch.trayClick(b.dataset.tray, 'double');
-});
+let lastBarTrayHtml = '';
+// Clics en los iconos de la bandeja (barra y panel). No se usa el evento "click": si los iconos se
+// repintan entre pulsar y soltar (las apps cambian su icono o su texto a menudo) el navegador no lo da.
+// Se reconoce por el icono pulsado al bajar y al soltar, y se manda como en la bandeja de Windows: el
+// clic al momento y, si llega otro sobre el mismo icono enseguida, además el doble clic.
+function trayClicks(container, after) {
+  let downKey = null, lastKey = null, lastAt = 0;
+  container.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    const b = !e.target.closest('[data-pin]') && e.target.closest('[data-tray]'); downKey = b ? b.dataset.tray : null;
+  });
+  container.addEventListener('mouseup', (e) => {
+    if (e.button !== 0 || !downKey) return;
+    const b = e.target.closest('[data-tray]'); const key = b ? b.dataset.tray : null;
+    const k = downKey; downKey = null;
+    if (key !== k) return; // soltado fuera del icono: no es un clic
+    const now = Date.now();
+    if (lastKey === k && now - lastAt < 450) { lastKey = null; notch.trayClick(k, 'double'); }
+    else { lastKey = k; lastAt = now; notch.trayClick(k, 'left'); }
+    if (after) after();
+  });
+}
+trayClicks($('barTray'));
+trayClicks($('trayGrid'), () => setOpen(false));
 $('bar').addEventListener('contextmenu', (e) => {
   e.preventDefault(); e.stopPropagation();
   if (e.target.closest('#barVol')) { togglePop('mixer'); return; }

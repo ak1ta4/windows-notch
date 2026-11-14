@@ -431,6 +431,14 @@ public static class Tray {
       lock (gate) {
         Icon ic;
         icons.TryGetValue(key, out ic);
+        // Muchas apps añaden el icono con GUID pero luego lo modifican o fijan su versión sin el flag
+        // NIF_GUID (o al revés). Si no casa la clave, se busca el mismo icono por GUID o por ventana+id.
+        if (ic == null && d.msg != 0) {
+          foreach (var kv in icons) {
+            var o = kv.Value;
+            if ((n.guidItem != Guid.Empty && o.guid == n.guidItem) || (n.hWnd != 0 && o.hwnd == n.hWnd && o.uid == n.uID)) { ic = o; key = kv.Key; break; }
+          }
+        }
         switch (d.msg) {
           case 0: case 1: // NIM_ADD / NIM_MODIFY
             if (ic == null) {
@@ -511,7 +519,7 @@ public static class Tray {
     }
     AllowSetForegroundWindow(pid);
     if (att) AttachThreadInput(me, fgTid, false);
-    try { Console.Out.WriteLine("{\"type\":\"diag\",\"msg\":\"trayclick " + button + " v" + ic.version + " fg=" + (ok ? "ok" : "FALLO") + (GetForegroundWindow() == h ? " delante" : " detras") + "\"}"); Console.Out.Flush(); } catch { }
+    try { Console.Out.WriteLine("{\"type\":\"diag\",\"msg\":\"trayclick " + button + " " + J(ic.exe) + " v" + ic.version + " fg=" + (ok ? "ok" : "FALLO") + (GetForegroundWindow() == h ? " delante" : " detras") + "\"}"); Console.Out.Flush(); } catch { }
     POINT p; GetCursorPos(out p);
     uint cb = ic.cb; if (cb == 0) return;
     Func<uint, IntPtr> L4 = (msg) => new IntPtr(unchecked((int)((ic.uid << 16) | (msg & 0xFFFF))));
