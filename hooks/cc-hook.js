@@ -19,6 +19,7 @@ process.stdin.on('end', () => {
   const i = ev.tool_input || {};
   const body = JSON.stringify({
     hook_event_name: ev.hook_event_name, session_id: ev.session_id, cwd: ev.cwd,
+    ppid: process.ppid, // para que el notch encuentre la ventana de la sesión (terminal, VS Code, app)
     tool_name: ev.tool_name, message: ev.message, notification_type: ev.notification_type,
     tool_input: {
       file_path: i.file_path, notebook_path: i.notebook_path,

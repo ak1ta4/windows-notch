@@ -536,6 +536,46 @@ public static class Tray {
 // ---------- Clics fuera del notch ----------
 // Hook de ratón de bajo nivel SOLO de lectura: no bloquea ni modifica nada, solo avisa de que
 // hubo un clic (y solo mientras el panel está abierto) para poder cerrarlo al pulsar fuera.
+// ---------- Traer al frente la ventana de un proceso (o de su primer antepasado con ventana) ----------
+// Para las sesiones de Claude Code: el hook manda su proceso padre; subiendo por los padres se llega a
+// la terminal, VS Code o la app de Claude que la aloja.
+public static class FocusProc {
+  [StructLayout(LayoutKind.Sequential)] struct PBI { public IntPtr r1; public IntPtr peb; public IntPtr r2a; public IntPtr r2b; public IntPtr pid; public IntPtr ppid; }
+  [DllImport("ntdll.dll")] static extern int NtQueryInformationProcess(IntPtr h, int c, ref PBI i, int l, out int rl);
+  [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint a, bool i, int pid);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr h);
+  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr p);
+  [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool f);
+  [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte sc, uint f, UIntPtr x);
+  static int Parent(int pid) {
+    var h = OpenProcess(0x1000 /*QUERY_LIMITED_INFORMATION*/, false, pid); if (h == IntPtr.Zero) return 0;
+    try { var i = new PBI(); int rl; return NtQueryInformationProcess(h, 0, ref i, Marshal.SizeOf(i), out rl) == 0 ? (int)i.ppid : 0; }
+    finally { CloseHandle(h); }
+  }
+  public static string Focus(int pid) {
+    IntPtr w = IntPtr.Zero; string who = "";
+    for (int i = 0; i < 15 && pid > 4 && w == IntPtr.Zero; i++) {
+      try { var p = Process.GetProcessById(pid); if (p.MainWindowHandle != IntPtr.Zero) { w = p.MainWindowHandle; who = p.ProcessName; break; } } catch { }
+      pid = Parent(pid);
+    }
+    if (w == IntPtr.Zero) return "sin ventana";
+    if (IsIconic(w)) ShowWindow(w, 9 /*SW_RESTORE*/);
+    var fg = GetForegroundWindow(); uint ft = GetWindowThreadProcessId(fg, IntPtr.Zero), me = GetCurrentThreadId();
+    bool att = ft != 0 && ft != me && AttachThreadInput(me, ft, true);
+    BringWindowToTop(w);
+    bool ok = SetForegroundWindow(w);
+    if (att) AttachThreadInput(me, ft, false);
+    if (!ok) { keybd_event(0x12, 0, 0, UIntPtr.Zero); keybd_event(0x12, 0, 2, UIntPtr.Zero); ok = SetForegroundWindow(w); } // truco de Alt
+    return who + (ok ? " delante" : " FALLO");
+  }
+}
+
 public static class ClickWatch {
   delegate IntPtr HookProc(int code, IntPtr w, IntPtr l);
   static HookProc procKeep;
@@ -577,6 +617,14 @@ public static class Notch {
         if (l.IndexOf("\"trayclick\"") >= 0) {
           var m = System.Text.RegularExpressions.Regex.Match(l, "\"key\":\"((?:[^\"\\\\]|\\\\.)*)\".*?\"button\":\"(\\w+)\"");
           if (m.Success) { try { Tray.Click(System.Text.RegularExpressions.Regex.Unescape(m.Groups[1].Value), m.Groups[2].Value); } catch { } continue; }
+        }
+        if (l.IndexOf("\"focuspid\"") >= 0) {
+          var m = System.Text.RegularExpressions.Regex.Match(l, "\"pid\":(\\d+)");
+          if (m.Success) {
+            string r; try { r = FocusProc.Focus(int.Parse(m.Groups[1].Value)); } catch (Exception e) { r = "error " + e.Message; }
+            try { Console.Out.WriteLine("{\"type\":\"diag\",\"msg\":\"focuspid " + m.Groups[1].Value + " -> " + r.Replace("\"", "'") + "\"}"); Console.Out.Flush(); } catch { }
+            continue;
+          }
         }
         // Igual con el cambio de idioma: sin esperar al bucle se nota al instante.
         if (l.IndexOf("\"layout\"") >= 0) {

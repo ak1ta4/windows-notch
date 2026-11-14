@@ -495,6 +495,7 @@ function onClaudeEvent(ev) {
   const id = ev.session_id || 'default';
   const s = sessions.get(id) || { id, project: ev.cwd ? path.basename(ev.cwd) : 'Claude', status: 'idle', verb: '', obj: '', history: [] };
   if (ev.cwd) s.project = path.basename(ev.cwd);
+  if (Number.isInteger(ev.ppid) && ev.ppid > 0) s.pid = ev.ppid; // proceso que lanzó el hook: lleva a su ventana
   s.t = Date.now();
   switch (ev.hook_event_name) {
     case 'SessionStart': s.status = 'idle'; s.verb = 'Sesión iniciada'; s.obj = ''; break;
@@ -651,6 +652,17 @@ ipcMain.handle('claude-ask', (_e, { question, history }) => new Promise((resolve
   p.stdin.end(prompt);
 }));
 ipcMain.handle('claude-sessions', () => [...sessions.values()]);
+// Clic en una sesión: traer al frente la ventana donde corre (terminal, VS Code, app de Claude…).
+// Igual que con la bandeja: el notch se pone delante un instante y el helper (hijo suyo) cede el foco.
+ipcMain.on('claude-focus', (_e, id) => {
+  const s = sessions.get(id);
+  if (!s || !s.pid) { log('claude-focus: sin proceso para', String(id).slice(0, 8)); return; }
+  const wasFocusable = win.isFocusable();
+  if (!wasFocusable) setFocusableSafe(true);
+  takeForeground();
+  setTimeout(() => helperCmd({ cmd: 'focuspid', pid: s.pid }), 60);
+  if (!wasFocusable) setTimeout(() => { if (!hold) releaseFocus(); }, 1200);
+});
 ipcMain.on('claude-dismiss', (_e, id) => { const s = sessions.get(id); if (s && s.status === 'done') { s.status = 'idle'; send('claude', [...sessions.values()]); } });
 ipcMain.handle('open-folder', (_e, i) => { const f = config.folders[i]; if (f) shell.openPath(expand(f.path)); });
 ipcMain.handle('open-uri', (_e, uri) => {

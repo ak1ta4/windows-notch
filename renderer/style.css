@@ -522,3 +522,12 @@ input[type=range].muted::-webkit-slider-runnable-track { background: linear-grad
 .ls-item.sel .ls-kbd { visibility: visible; }
 .ls-empty { padding: 22px 10px; text-align: center; color: var(--sub); font-size: 12.5px; }
 .ls-hint { margin-top: 8px; text-align: center; font-size: 10.5px; color: var(--sub); }
+
+/* ================= v12: calendario marcable y sesiones de Claude clicables ================= */
+.cal-grid .d { cursor: pointer; transition: background .12s var(--smooth); }
+.cal-grid .d:not(.today):hover { background: var(--card-2); color: var(--text); }
+.cal-grid .d.sel { box-shadow: inset 0 0 0 1.5px var(--text); color: var(--text); font-weight: 700; }
+.cal-grid .d.today.sel { box-shadow: inset 0 0 0 1.5px var(--text), 0 0 0 2px var(--card); }
+.cal-grid .d.sel.has-task { box-shadow: inset 0 0 0 1.5px var(--text), inset 0 -3px 0 var(--yellow); }
+.cc[data-cc] { cursor: pointer; transition: background .12s var(--smooth); }
+.cc[data-cc]:hover { background: var(--card-2); }
