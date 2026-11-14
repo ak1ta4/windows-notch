@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('notch', {
   claudePending: () => ipcRenderer.invoke('claude-pending'),
   claudeDecide: (id, decision) => ipcRenderer.send('claude-decide', { id, decision }),
   claudeDismiss: (id) => ipcRenderer.send('claude-dismiss', id),
+  claudeFocus: (id) => ipcRenderer.send('claude-focus', id),
   todos: () => ipcRenderer.invoke('todos'),
   todoAdd: (t) => ipcRenderer.invoke('todo-add', t),
   todoToggle: (id) => ipcRenderer.invoke('todo-toggle', id),

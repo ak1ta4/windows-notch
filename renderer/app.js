@@ -29,6 +29,7 @@ const S = {
   hudUntil: 0,
   audioActive: false,
   calOffset: 0,
+  calSel: null,   // día marcado en el calendario (AAAA-MM-DD)
   hover: false,
   typing: false,
   dragging: { vol: false, mic: false, seek: false },
@@ -154,7 +155,8 @@ document.addEventListener('mousedown', (e) => {
   notch.log('mousedown', e.button, t ? (t.id || t.dataset.view || t.dataset.tray || t.className || t.tagName) : e.target.tagName, S.open ? `abierto:${S.view}` : 'compacto');
   const inp = e.target.closest('input[type=text], input[type=datetime-local]');
   if (inp) startTyping(inp);
-  else if (S.typing && !e.target.closest('.task-form, .quick-due, .ask-form')) stopTyping();
+  // En el buscador, pulsar un resultado no debe soltar el foco: al soltarlo se cerraba antes del clic
+  else if (S.typing && !e.target.closest('.task-form, .quick-due, .ask-form, [data-name=search]')) stopTyping();
 });
 
 // ============ Reloj ============
@@ -201,8 +203,10 @@ function renderCalendar() {
       if (d.getMonth() !== base.getMonth()) cls.push('out');
       if (i >= 5) cls.push('we');
       if (d.toDateString() === now.toDateString()) cls.push('today');
-      if (dueDays.has(localIso(d).slice(0, 10))) cls.push('has-task');
-      html += `<span class="${cls.join(' ')}">${d.getDate()}</span>`;
+      const iso = localIso(d).slice(0, 10);
+      if (dueDays.has(iso)) cls.push('has-task');
+      if (iso === S.calSel) cls.push('sel');
+      html += `<span class="${cls.join(' ')}" data-day="${iso}">${d.getDate()}</span>`;
       d.setDate(d.getDate() + 1);
     }
   }
@@ -211,6 +215,26 @@ function renderCalendar() {
 $('calPrev').onclick = () => { S.calOffset--; renderCalendar(); };
 $('calNext').onclick = () => { S.calOffset++; renderCalendar(); };
 $('calMonth').onclick = () => { S.calOffset = 0; renderCalendar(); };
+// Marcar un día con el ratón (otro clic lo desmarca). Un día de otro mes lleva también a ese mes.
+$('calGrid').addEventListener('click', (e) => {
+  const c = e.target.closest('[data-day]'); if (!c) return;
+  const iso = c.dataset.day;
+  S.calSel = S.calSel === iso ? null : iso;
+  if (c.classList.contains('out')) {
+    const now = new Date(), [y, m] = iso.split('-').map(Number);
+    S.calOffset = (y - now.getFullYear()) * 12 + (m - 1 - now.getMonth());
+  }
+  renderCalendar();
+});
+// Rueda sobre el calendario: mes anterior / siguiente (con un respiro para las ruedas y touchpads rápidos)
+let calWheelAt = 0;
+$('calCard').addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const now = Date.now(); if (now - calWheelAt < 120 || !e.deltaY) return;
+  calWheelAt = now;
+  S.calOffset += e.deltaY > 0 ? 1 : -1;
+  renderCalendar();
+}, { passive: false });
 
 // ============ Estado nativo ============
 notch.onNative((msg) => {
@@ -498,7 +522,7 @@ function renderClaude() {
   const sessHtml = items.map((s) => {
     const st = { working: 'Trabajando', waiting: 'Esperando tu respuesta', done: 'Terminado', idle: 'En espera' }[s.status];
     const ico = s.status === 'done' ? `<span class="c-icon">${icon('check')}</span>` : `<span class="dot ${s.status}" ${s.status === 'idle' ? 'style="background:var(--sub)"' : ''}></span>`;
-    return `<div class="cc ${s.status}">${ico}<div class="cc-main">
+    return `<div class="cc ${s.status}"${s.pid ? ` data-cc="${esc(s.id)}" title="Ir a esta sesión"` : ''}>${ico}<div class="cc-main">
       <div class="cc-proj">${esc(s.project)} <span class="cc-state">· ${st}</span></div>
       <div class="cc-act">${esc(s.verb)} ${esc(s.obj)}</div>
       ${s.history && s.history.length > 1 ? `<div class="cc-hist">${s.history.slice(1, 4).map(esc).join('  ·  ')}</div>` : ''}
@@ -525,6 +549,12 @@ notch.onClaudeAlert(({ kind, session }) => {
     chime([523.25, 523.25]);
   }
   renderCompact();
+});
+// Clic en una sesión: ir a su ventana (terminal, VS Code o la app de Claude)
+$('claudeList').addEventListener('click', (e) => {
+  const c = e.target.closest('[data-cc]'); if (!c) return;
+  notch.claudeFocus(c.dataset.cc);
+  setOpen(false);
 });
 document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-perm]'); if (!b) return;
@@ -1093,6 +1123,7 @@ lsInput.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowUp' || (e.key === 'Tab' && e.shiftKey)) { e.preventDefault(); LS.sel = Math.max(0, LS.sel - 1); renderLS(); }
   else if (e.key === 'Enter') { e.preventDefault(); lsOpen(LS.sel, e.ctrlKey); }
 });
+lsList.addEventListener('mousedown', (e) => { if (e.target.closest('.ls-item')) e.preventDefault(); }); // el cuadro de texto conserva el foco
 lsList.addEventListener('click', (e) => { const b = e.target.closest('.ls-item'); if (b) lsOpen(+b.dataset.i, e.ctrlKey); });
 lsList.addEventListener('mousemove', (e) => {
   const b = e.target.closest('.ls-item'); if (!b || +b.dataset.i === LS.sel) return;
