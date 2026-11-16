@@ -22,7 +22,7 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; user-select: none; }
 body { font-family: var(--font); color: var(--text); font-size: 12px; -webkit-font-smoothing: antialiased; }
-button { font: inherit; color: inherit; background: none; border: 0; cursor: default; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
 i[data-icon] { display: inline-flex; width: 16px; height: 16px; flex: none; }
 i[data-icon] svg { width: 100%; height: 100%; }
 
@@ -252,7 +252,6 @@ input[type=range].muted::-webkit-slider-runnable-track { background: linear-grad
 .task-form input { background: transparent; border: 0; outline: 0; color: var(--text); font: inherit; font-size: 13px; }
 #taskText { flex: 1; min-width: 0; }
 #taskText::placeholder { color: var(--sub); }
-#taskDue { width: 172px; color: var(--text-2); font-size: 12px; background: var(--card-2); border-radius: 10px; padding: 5px 8px; color-scheme: dark; }
 .icon-btn.add { background: var(--text); color: #000; }
 .icon-btn.add:hover { background: #fff; color: #000; }
 .quick-due { display: flex; gap: 6px; margin: 8px 0 10px; flex-wrap: wrap; }
@@ -531,3 +530,57 @@ input[type=range].muted::-webkit-slider-runnable-track { background: linear-grad
 .cal-grid .d.sel.has-task { box-shadow: inset 0 0 0 1.5px var(--text), inset 0 -3px 0 var(--yellow); }
 .cc[data-cc] { cursor: pointer; transition: background .12s var(--smooth); }
 .cc[data-cc]:hover { background: var(--card-2); }
+
+/* ================= v13: editar tareas + selector de fecha propio ================= */
+.task .t-text, .task .due { cursor: pointer; }
+.task .t-text:hover { color: var(--text); }
+.task .due { transition: background .15s, color .15s, opacity .15s; }
+.task .due:hover { background: var(--line); color: var(--text); }
+.task .due.add-due { opacity: 0; background: transparent; color: var(--sub); }
+.task:hover .due.add-due { opacity: 1; }
+.task .due.add-due:hover { background: var(--card-2); color: var(--text-2); }
+
+/* fila en edición */
+.task.editing { flex-direction: column; align-items: stretch; gap: 8px; padding: 8px 8px 10px 12px; background: var(--card-2); box-shadow: inset 0 0 0 1px var(--line); }
+.te-top { display: flex; align-items: center; gap: 6px; }
+.te-text { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; color: var(--text); font: inherit; font-size: 13px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.te-text:focus { border-bottom-color: var(--sub); }
+.te-top .icon-btn svg { width: 14px; height: 14px; }
+
+/* botón de fecha del formulario de nueva tarea */
+.due-btn { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 11px; border-radius: 14px; background: var(--card-2); color: var(--sub); font-size: 11.5px; white-space: nowrap; transition: background .15s, color .15s; }
+.due-btn:hover { color: var(--text-2); background: var(--line); }
+.due-btn.on { color: var(--text); }
+.due-btn svg { width: 12px; height: 12px; }
+.new-picker { margin: 0 0 10px; background: var(--card); border-radius: 14px; padding: 10px 12px; }
+
+/* selector */
+.due-picker { display: flex; flex-direction: column; gap: 7px; }
+.due-picker[hidden] { display: none; }
+.pd-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.pd-k { width: 34px; flex: none; font-size: 10.5px; color: var(--sub); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.pd-chip { display: inline-flex; align-items: center; gap: 3px; height: 24px; padding: 0 9px; border-radius: 12px; font-size: 11px; color: var(--text-2); background: transparent; box-shadow: inset 0 0 0 1px var(--line); transition: background .12s, color .12s, box-shadow .12s; }
+.pd-chip:hover { background: var(--line); color: var(--text); }
+.pd-chip.on { background: var(--text); color: #000; box-shadow: none; font-weight: 600; }
+.pd-chip svg { width: 11px; height: 11px; transition: transform .2s var(--smooth); }
+.pd-chip.open svg { transform: rotate(180deg); }
+.pd-time { display: inline-flex; align-items: center; height: 24px; padding: 0 6px; border-radius: 12px; box-shadow: inset 0 0 0 1px var(--line); margin-left: 2px; font-variant-numeric: tabular-nums; }
+.pd-time.on { box-shadow: inset 0 0 0 1.5px var(--text); }
+.pd-time input { width: 18px; background: transparent; border: 0; outline: 0; color: var(--text); font: inherit; font-size: 11.5px; text-align: center; padding: 0; cursor: ns-resize; }
+.pd-time input:focus { color: #fff; background: var(--line); border-radius: 4px; cursor: text; }
+.pd-time b { color: var(--sub); font-weight: 400; font-size: 11px; padding: 0 1px; }
+.pd-cal { margin-left: 38px; max-width: 230px; }
+.pd-cal-head { display: flex; align-items: center; justify-content: space-between; font-size: 11.5px; color: var(--text); margin-bottom: 3px; }
+.pd-cal-head .icon-btn:disabled { opacity: .25; pointer-events: none; }
+.pd-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; text-align: center; font-variant-numeric: tabular-nums; }
+.pd-dow { font-size: 9.5px; color: var(--sub); font-weight: 600; padding-bottom: 2px; }
+.pd-d { height: 24px; border-radius: 12px; font-size: 11px; color: var(--text-2); }
+.pd-d:hover:not(:disabled) { background: var(--line); color: var(--text); }
+.pd-d.out { color: #5a524c; }
+.pd-d.today { box-shadow: inset 0 0 0 1px var(--sub); }
+.pd-d.on { background: var(--text); color: #000; font-weight: 600; box-shadow: none; }
+.pd-d:disabled { color: #3a3532; cursor: default; }
+
+/* ================= v14: cursor de mano en todo lo pulsable ================= */
+button:disabled { cursor: default; }
+input[type=range], input[type=range]::-webkit-slider-thumb, select, [data-tray], [data-view], [data-open-view], .compact { cursor: pointer; }

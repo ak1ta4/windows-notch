@@ -455,6 +455,17 @@ ipcMain.handle('todo-add', async (_e, { text, due }) => {
     return await editTodos((t) => [...t, { id: crypto.randomUUID(), text, done: false, created: Date.now(), due: validDue(due), notified: false }]);
   } catch { return { ok: false, todos: [] }; }
 });
+// Editar texto y/o fecha. Si cambia la fecha, el agente vuelve a avisar en la nueva hora.
+ipcMain.handle('todo-update', async (_e, { id, text, due }) => {
+  text = String(text || '').trim().slice(0, 300);
+  if (!text) return getTodos();
+  due = validDue(due);
+  try {
+    return await editTodos((t) => t.map((x) => (x.id === id
+      ? { ...x, text, due, notified: x.due === due ? x.notified : false }
+      : x)));
+  } catch { return getTodos(); }
+});
 ipcMain.handle('todo-toggle', async (_e, id) => {
   try { return await editTodos((t) => t.map((x) => (x.id === id ? { ...x, done: !x.done } : x))); } catch { return getTodos(); }
 });

@@ -23,7 +23,7 @@ const S = {
   claude: [],
   pending: [],         // permisos de Claude esperando respuesta
   doneShownUntil: {},  // sessionId -> ts
-  todos: [], todosOk: false,
+  todos: [], todosOk: false, editTodo: null,
   remindAlerted: new Set(),
   remindShow: null,    // { text, until }
   hudUntil: 0,
@@ -91,6 +91,7 @@ function setOpen(open) {
   notch.panelOpen(open || !!S.pop);
   if (open) closePop();
   if (!open) {
+    if (S.editTodo) cancelEdit();
     stopTyping();
     setView('main'); S.calOffset = 0; renderCalendar();
   } else if (S.pending.length) setView('claude');
@@ -131,7 +132,11 @@ compact.addEventListener('wheel', (e) => {
   notch.native({ cmd: 'vol', v });
   showHud();
 }, { passive: true });
-window.addEventListener('keydown', (e) => { if (e.key === 'Escape') setOpen(false); });
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (S.editTodo) { cancelEdit(); return; } // Esc cancela la edición sin cerrar el panel
+  setOpen(false);
+});
 // El buscador se cierra al pasar a otra ventana, pero solo si llegó a tener el foco (al abrirse hay un parpadeo de foco)
 window.addEventListener('focus', () => { if (S.open && S.view === 'search') LS.focused = true; });
 window.addEventListener('blur', () => {
@@ -143,7 +148,10 @@ notch.onExpand(() => setOpen(true));
 // Escribir: la ventana solo acepta foco mientras hay un campo activo (así no roba el foco a tus apps).
 function startTyping(el) {
   if (!S.typing) { S.typing = true; notch.hold(true); notch.focusable(true); }
-  setTimeout(() => el.focus(), 30);
+  // Reintenta hasta que la ventana tenga el foco de verdad (pasar a enfocable no es instantáneo)
+  let n = 0;
+  const f = () => { el.focus(); if ((!document.hasFocus() || document.activeElement !== el) && ++n < 12) setTimeout(f, 40); };
+  setTimeout(f, 30);
 }
 function stopTyping() {
   if (!S.typing) return;
@@ -156,7 +164,7 @@ document.addEventListener('mousedown', (e) => {
   const inp = e.target.closest('input[type=text], input[type=datetime-local]');
   if (inp) startTyping(inp);
   // En el buscador, pulsar un resultado no debe soltar el foco: al soltarlo se cerraba antes del clic
-  else if (S.typing && !e.target.closest('.task-form, .quick-due, .ask-form, [data-name=search]')) stopTyping();
+  else if (S.typing && !e.target.closest('.task-form, .quick-due, .due-picker, .task.editing, .ask-form, [data-name=search]')) stopTyping();
 });
 
 // ============ Reloj ============
@@ -598,35 +606,194 @@ function renderTodos() {
     $('tasks').innerHTML = `<div class="empty">No conecto con el agente del home-dashboard (${esc((S.cfg && S.cfg.homeServer) || '')}).<br>Arráncalo y vuelve a abrir esta pestaña.</div>`;
     resize(); return;
   }
+  // Mientras se edita una tarea no se redibuja la lista (se perdería lo escrito)
+  if (S.editTodo && S.todos.some((t) => t.id === S.editTodo) && $('tasks').querySelector('.task.editing')) return;
   const now = Date.now();
   const sorted = [...S.todos].sort((a, b) => (a.done - b.done) || ((a.due || '9') < (b.due || '9') ? -1 : 1));
   $('tasks').innerHTML = sorted.slice(0, 8).map((t) => {
+    if (S.editTodo === t.id) {
+      return `<div class="task editing" data-id="${esc(t.id)}">
+        <div class="te-top">
+          <input type="text" class="te-text" maxlength="300" value="${esc(t.text)}" placeholder="Texto de la tarea…">
+          <button type="button" class="icon-btn sm" data-te-cancel title="Cancelar (Esc)">${icon('x')}</button>
+          <button type="button" class="icon-btn sm add" data-te-save title="Guardar (Enter)">${icon('check')}</button>
+        </div>
+        <div class="due-picker" id="editPicker"></div>
+      </div>`;
+    }
     const late = t.due && !t.done && new Date(t.due).getTime() < now;
     return `<div class="task ${t.done ? 'done' : ''}">
       <button class="check" data-todo-toggle="${esc(t.id)}">${t.done ? icon('check') : ''}</button>
-      <span class="t-text">${esc(t.text)}</span>
-      ${t.due ? `<span class="due ${late ? 'late' : ''}">${icon('alarm')}${esc(dueLabel(t.due))}</span>` : ''}
+      <span class="t-text" data-todo-edit="${esc(t.id)}" title="Editar">${esc(t.text)}</span>
+      ${t.due ? `<span class="due ${late ? 'late' : ''}" data-todo-edit="${esc(t.id)}" data-focus="due" title="Cambiar fecha">${icon('alarm')}${esc(dueLabel(t.due))}</span>`
+        : `<span class="due add-due" data-todo-edit="${esc(t.id)}" data-focus="due" title="Poner fecha">${icon('alarm')}Fecha</span>`}
       <button class="icon-btn sm del" data-todo-del="${esc(t.id)}" title="Borrar">${icon('trash')}</button>
     </div>`;
   }).join('') + (sorted.length > 8 ? `<button class="more" id="openHome">${sorted.length - 8} más en el dashboard ${icon('ext')}</button>` : '')
     || '<div class="empty">Sin tareas. Añade una arriba; si le pones hora, el agente te avisará y aquí verás la cuenta atrás.</div>';
+  const t = S.editTodo && S.todos.find((x) => x.id === S.editTodo);
+  if (t) { editPicker = makeDuePicker($('editPicker')); editPicker.set(t.due); }
   resize();
 }
+
+// ---- Selector de fecha propio (días rápidos + calendario + hora) ----
+const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const TIME_PRESETS = ['09:00', '13:00', '18:00', '21:00'];
+function makeDuePicker(el, onChange) {
+  const st = { day: '', time: '09:00', cal: false, mon: 0 };
+  const changed = () => { if (onChange) onChange(api.value()); };
+  const api = {
+    value: () => (st.day ? `${st.day}T${st.time}` : ''),
+    set(due, quiet) {
+      if (due) { st.day = due.slice(0, 10); st.time = due.slice(11, 16) || '09:00'; } else st.day = '';
+      st.cal = false; st.mon = 0; render(quiet);
+    },
+  };
+  function render(quiet) {
+    const t0 = new Date(); t0.setHours(0, 0, 0, 0);
+    const days = [...Array(7)].map((_, i) => { const d = new Date(t0); d.setDate(t0.getDate() + i); return d; });
+    const lbl = (d, i) => (i === 0 ? 'Hoy' : i === 1 ? 'Mañana' : cap(d.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric' }).replace('.', '')));
+    const inWeek = days.some((d) => ymd(d) === st.day);
+    const other = st.day && !inWeek ? new Date(st.day + 'T00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'short' }).replace('.', '') : 'Otro día';
+    let h = `<div class="pd-row"><span class="pd-k">Día</span>
+      <button type="button" class="pd-chip ${!st.day ? 'on' : ''}" data-pd-day="">Sin fecha</button>
+      ${days.map((d, i) => `<button type="button" class="pd-chip ${ymd(d) === st.day ? 'on' : ''}" data-pd-day="${ymd(d)}">${lbl(d, i)}</button>`).join('')}
+      <button type="button" class="pd-chip pd-other ${st.day && !inWeek ? 'on' : ''} ${st.cal ? 'open' : ''}" data-pd-cal>${other}${icon('chevron')}</button></div>`;
+    if (st.cal) {
+      const base = new Date(t0.getFullYear(), t0.getMonth() + st.mon, 1);
+      const start = new Date(base); start.setDate(1 - ((base.getDay() + 6) % 7));
+      let cells = '';
+      for (let i = 0; i < 42; i++) {
+        const d = new Date(start); d.setDate(start.getDate() + i);
+        const k = ymd(d);
+        cells += `<button type="button" class="pd-d ${d.getMonth() !== base.getMonth() ? 'out' : ''} ${k === ymd(t0) ? 'today' : ''} ${k === st.day ? 'on' : ''}" ${d < t0 ? 'disabled' : `data-pd-day="${k}"`}>${d.getDate()}</button>`;
+      }
+      const title = cap(base.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }));
+      h += `<div class="pd-cal">
+        <div class="pd-cal-head"><button type="button" class="icon-btn sm" data-pd-mon="-1" ${st.mon <= 0 ? 'disabled' : ''}>${icon('left')}</button>
+          <span>${title}</span><button type="button" class="icon-btn sm" data-pd-mon="1">${icon('right')}</button></div>
+        <div class="pd-grid">${['L', 'M', 'X', 'J', 'V', 'S', 'D'].map((x) => `<span class="pd-dow">${x}</span>`).join('')}${cells}</div></div>`;
+    }
+    if (st.day) {
+      const [hh, mm] = st.time.split(':');
+      h += `<div class="pd-row"><span class="pd-k">Hora</span>
+        ${TIME_PRESETS.map((p) => `<button type="button" class="pd-chip ${p === st.time ? 'on' : ''}" data-pd-time="${p}">${p}</button>`).join('')}
+        <span class="pd-time ${TIME_PRESETS.includes(st.time) ? '' : 'on'}" title="Escribe la hora o usa la rueda del ratón / flechas">
+          <input type="text" data-pd-h maxlength="2" inputmode="numeric" value="${hh}"><b>:</b><input type="text" data-pd-m maxlength="2" inputmode="numeric" value="${mm}">
+        </span></div>`;
+    }
+    el.innerHTML = h;
+    if (!quiet) resize();
+  }
+  function setTime(h, m) {
+    h = ((h % 24) + 24) % 24; m = ((m % 60) + 60) % 60;
+    st.time = `${pad(h)}:${pad(m)}`;
+    const hi = el.querySelector('[data-pd-h]'), mi = el.querySelector('[data-pd-m]');
+    if (hi && document.activeElement !== hi) hi.value = pad(h);
+    if (mi && document.activeElement !== mi) mi.value = pad(m);
+    el.querySelectorAll('[data-pd-time]').forEach((b) => b.classList.toggle('on', b.dataset.pdTime === st.time));
+    const box = el.querySelector('.pd-time'); if (box) box.classList.toggle('on', !TIME_PRESETS.includes(st.time));
+    changed();
+  }
+  const cur = () => st.time.split(':').map(Number);
+  el.addEventListener('mousedown', (e) => { if (e.target.closest('button')) e.preventDefault(); }); // no roba el foco al texto
+  el.addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b || b.disabled) return;
+    if (b.dataset.pdDay !== undefined) {
+      st.day = b.dataset.pdDay; st.cal = false;
+      // Si es hoy y la hora ya pasó, propone la próxima hora en punto
+      if (st.day === ymd(new Date()) && new Date(`${st.day}T${st.time}`) < new Date()) st.time = `${pad((new Date().getHours() + 1) % 24)}:00`;
+      render(); changed();
+    } else if (b.dataset.pdCal !== undefined) { st.cal = !st.cal; render(); }
+    else if (b.dataset.pdMon) { st.mon = Math.max(0, st.mon + Number(b.dataset.pdMon)); render(); }
+    else if (b.dataset.pdTime) { const [h, m] = b.dataset.pdTime.split(':').map(Number); setTime(h, m); }
+  });
+  el.addEventListener('input', (e) => {
+    const i = e.target; if (!i.matches('[data-pd-h], [data-pd-m]')) return;
+    i.value = i.value.replace(/\D/g, '');
+    const [h, m] = cur(); const v = Number(i.value || 0);
+    if (i.matches('[data-pd-h]')) setTime(Math.min(v, 23), m); else setTime(h, Math.min(v, 59));
+  });
+  el.addEventListener('focusout', (e) => {
+    if (e.target.matches('[data-pd-h]')) e.target.value = st.time.slice(0, 2);
+    else if (e.target.matches('[data-pd-m]')) e.target.value = st.time.slice(3);
+  });
+  const bump = (i, dir) => {
+    const [h, m] = cur();
+    if (i.matches('[data-pd-h]')) setTime(h + dir, m); else setTime(h, Math.round((m + dir * 5) / 5) * 5);
+    i.value = i.matches('[data-pd-h]') ? st.time.slice(0, 2) : st.time.slice(3);
+  };
+  el.addEventListener('wheel', (e) => {
+    const i = e.target.closest('[data-pd-h], [data-pd-m]'); if (!i) return;
+    e.preventDefault(); bump(i, e.deltaY < 0 ? 1 : -1);
+  }, { passive: false });
+  el.addEventListener('keydown', (e) => {
+    const i = e.target.closest('[data-pd-h], [data-pd-m]'); if (!i) return;
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); bump(i, e.key === 'ArrowUp' ? 1 : -1); }
+  });
+  render(true); // al crearse no redimensiona (puede ser antes de que la ventana esté lista)
+  return api;
+}
+
+// ---- Editar una tarea en su propia fila ----
+let editPicker = null;
+function editTask(id, focusDue) {
+  S.editTodo = id; editPicker = null;
+  $('tasks').innerHTML = ''; // fuerza el redibujado en modo edición
+  renderTodos();
+  const inp = $('tasks').querySelector('.te-text');
+  if (inp) { startTyping(inp); if (!focusDue) setTimeout(() => inp.setSelectionRange(inp.value.length, inp.value.length), 60); }
+}
+function cancelEdit() {
+  if (!S.editTodo) return;
+  S.editTodo = null; editPicker = null; $('tasks').innerHTML = '';
+  stopTyping(); renderTodos();
+}
+async function saveEdit() {
+  const id = S.editTodo; if (!id) return;
+  const inp = $('tasks').querySelector('.te-text');
+  const text = inp ? inp.value.trim() : '';
+  if (!text) return;
+  const due = editPicker ? editPicker.value() : '';
+  S.editTodo = null; editPicker = null; $('tasks').innerHTML = '';
+  stopTyping();
+  applyTodos(await notch.todoUpdate({ id, text, due }));
+}
+$('tasks').addEventListener('click', (e) => {
+  if (e.target.closest('[data-te-save]')) { saveEdit(); return; }
+  if (e.target.closest('[data-te-cancel]')) { cancelEdit(); return; }
+  const el = e.target.closest('[data-todo-edit]'); if (!el) return;
+  if (S.editTodo) cancelEdit();
+  editTask(el.dataset.todoEdit, !!el.dataset.focus);
+});
+$('tasks').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.closest('.task.editing')) { e.preventDefault(); saveEdit(); } });
+
+// ---- Nueva tarea: el mismo selector, plegado bajo el botón de fecha ----
+const newPicker = makeDuePicker($('newPicker'), (v) => setNewDue(v, true));
+function setNewDue(v, fromPicker) {
+  $('taskDue').value = v || '';
+  $('taskDueBtn').classList.toggle('on', !!v);
+  $('taskDueBtn').innerHTML = `${icon('alarm')}<span>${v ? esc(dueLabel(v)) : 'Fecha'}</span>`;
+  if (!fromPicker) newPicker.set(v, true);
+}
+$('taskDueBtn').addEventListener('mousedown', (e) => e.preventDefault());
+$('taskDueBtn').addEventListener('click', () => { $('newPicker').hidden = !$('newPicker').hidden; resize(); });
+setNewDue('');
 $('taskForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const text = $('taskText').value.trim(); if (!text) return;
   const due = $('taskDue').value;
-  $('taskText').value = ''; $('taskDue').value = '';
+  $('taskText').value = ''; setNewDue(''); $('newPicker').hidden = true;
   applyTodos(await notch.todoAdd({ text, due }));
 });
 $('quickDue').addEventListener('click', (e) => {
   const b = e.target.closest('[data-in]'); if (!b) return;
   const d = new Date(); const v = b.dataset.in;
-  if (v === 'none') { $('taskDue').value = ''; return; }
+  if (v === 'none') { setNewDue(''); return; }
   if (v === 'tonight') { d.setHours(21, 0, 0, 0); if (d < new Date()) d.setDate(d.getDate() + 1); }
   else if (v === 'tomorrow') { d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); }
   else d.setMinutes(d.getMinutes() + Number(v));
-  $('taskDue').value = localIso(d);
+  setNewDue(localIso(d));
   startTyping($('taskText'));
 });
 $('quickTask').onclick = () => { setView('tasks'); startTyping($('taskText')); };

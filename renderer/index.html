@@ -134,7 +134,8 @@
       <section class="view" data-name="tasks">
         <form class="task-form" id="taskForm" autocomplete="off">
           <input type="text" id="taskText" placeholder="Nueva tarea o recordatorio…" maxlength="300">
-          <input type="datetime-local" id="taskDue" title="Fecha y hora del aviso (opcional)">
+          <input type="hidden" id="taskDue">
+          <button type="button" class="due-btn" id="taskDueBtn" title="Fecha y hora del aviso (opcional)"></button>
           <button type="submit" class="icon-btn add" title="Añadir"><i data-icon="plus"></i></button>
         </form>
         <div class="quick-due" id="quickDue">
@@ -144,6 +145,7 @@
           <button type="button" data-in="tomorrow">Mañana 9:00</button>
           <button type="button" data-in="none">Sin aviso</button>
         </div>
+        <div class="due-picker new-picker" id="newPicker" hidden></div>
         <div class="tasks" id="tasks"></div>
       </section>
 
