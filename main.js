@@ -681,10 +681,11 @@ ipcMain.handle('open-uri', (_e, uri) => {
   if (allowed.test(uri)) shell.openExternal(uri);
 });
 ipcMain.handle('open-home', () => shell.openExternal(config.homeServer));
-ipcMain.handle('launch', (_e, what) => {
+function launchApp(what) {
   const apps = { taskmgr: ['taskmgr.exe', []], terminal: ['wt.exe', []], explorer: ['explorer.exe', []] };
   const a = apps[what]; if (a) spawn(a[0], a[1], { detached: true, stdio: 'ignore', shell: true }).unref();
-});
+}
+ipcMain.handle('launch', (_e, what) => launchApp(what));
 ipcMain.handle('power', (_e, action) => {
   const cmds = {
     lock: ['rundll32.exe', ['user32.dll,LockWorkStation']],
@@ -717,12 +718,14 @@ ipcMain.on('context-menu', () => {
   if (!wasFocusable) setFocusableSafe(true);
   takeForeground();
   Menu.buildFromTemplate([
+    { label: 'Administrador de tareas', click: () => { handForegroundToLaunch(); launchApp('taskmgr'); } },
+    { type: 'separator' },
     { label: 'Recargar notch', click: () => win.reload() },
     { label: 'Herramientas de desarrollo', click: () => win.webContents.openDevTools({ mode: 'detach' }) },
     { label: 'Abrir config.json', click: () => shell.openPath(path.join(__dirname, 'config.json')) },
     { type: 'separator' },
     { label: 'Salir', click: () => { app.isQuitting = true; app.quit(); } },
-  ]).popup({ window: win, callback: () => { if (!wasFocusable && !hold) releaseFocus(); } });
+  ]).popup({ window: win, callback: () => { if (!wasFocusable && !hold) setFocusable(false); } }); // si se lanzó algo, espera a que salga delante
 });
 
 // ---------------- Arranque ----------------
