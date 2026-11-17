@@ -670,6 +670,8 @@ const askImported = new Set(); // ya pasadas a la app de Claude: no se tocan
 function dropAskSession(id) {
   if (!id || !askOwned.has(id) || askImported.has(id)) return;
   askOwned.delete(id);
+  // Si ya está en la app de Claude (p. ej. importada a mano) no se toca
+  if (desktopSessionFor(id)) { askImported.add(id); return; }
   try {
     for (const d of fs.readdirSync(CLAUDE_PROJECTS)) {
       const f = path.join(CLAUDE_PROJECTS, d, `${id}.jsonl`);
