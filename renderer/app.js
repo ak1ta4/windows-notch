@@ -90,7 +90,9 @@ function setOpen(open) {
   island.classList.toggle('open', open);
   notch.panelOpen(open || !!S.pop);
   if (open) closePop();
+  if (open) S.archivePending = false; // se volvió a abrir antes de que acabase la respuesta: sigue la conversación
   if (!open) {
+    if (S.ask.length) archiveAsk();
     if (S.editTodo) cancelEdit();
     stopTyping();
     setView('main'); S.calOffset = 0; renderCalendar();
@@ -106,7 +108,7 @@ function setView(v) {
   if (v === 'tasks') loadTodos();
   if (v === 'stats') loadStats();
   if (v === 'lang') renderLayouts();
-  if (v === 'search') { LS.focused = false; lsInput.value = ''; LS.sel = 0; LS.files = []; LS.fileQ = ''; lsLoadIndex(); renderLS(); startTyping(lsInput); }
+  if (v === 'search') { LS.focused = false; lsInput.value = ''; $('lsGhost').textContent = ''; LS.sel = 0; LS.files = []; LS.fileQ = ''; lsLoadIndex(); renderLS(); startTyping(lsInput); }
   resize();
 }
 
@@ -173,7 +175,7 @@ document.addEventListener('mousedown', (e) => {
   const inp = e.target.closest('input[type=text], input[type=datetime-local]');
   if (inp) startTyping(inp);
   // En el buscador, pulsar un resultado no debe soltar el foco: al soltarlo se cerraba antes del clic
-  else if (S.typing && !e.target.closest('.task-form, .quick-due, .due-picker, .task.editing, .ask-form, .q-card, [data-name=search]')) stopTyping();
+  else if (S.typing && !e.target.closest('.task-form, .quick-due, .due-picker, .task.editing, .ask-form, .q-card, .conv-form, [data-name=search]')) stopTyping();
 });
 
 // ============ Reloj ============
@@ -994,19 +996,25 @@ $('askForm').addEventListener('submit', async (e) => {
   S.asking = false;
   S.ask.push({ role: 'claude', ai: r.model, text: r.text || (r.ok ? '(sin respuesta)' : 'No se pudo preguntar a Claude.'), error: !r.ok, auth: !!r.auth });
   renderAsk();
+  // Se cerró mientras respondía: se pasa a la app ahora que ya tiene la respuesta
+  if (S.archivePending && !S.open) archiveAsk();
 });
 
-
+// Al cerrar la conversación (clic fuera, ↗ o ⟲) se añade sola a la app de Claude y el notch empieza otra
+function archiveAsk() {
+  if (S.asking) { S.archivePending = true; return; }
+  S.archivePending = false;
+  const had = S.ask.some((m) => m.role === 'claude' && !m.error);
+  if (!S.ask.length) return;
+  S.ask = []; renderAsk();
+  if (had) notch.claudeAskOpen(); else notch.claudeAskReset();
+}
 $('askLog').addEventListener('click', (e) => {
   if (!e.target.closest('#askLogin')) return;
   notch.claudeLogin(); setOpen(false);
 });
-$('askClear').onclick = () => { S.ask = []; notch.claudeAskReset(); renderAsk(); };
-// Se queda guardada como sesión de Claude Code; este botón la añade a la app de Claude y la abre
-$('askOpen').onclick = async () => {
-  if (S.asking || !(await notch.claudeAskOpen())) return;
-  S.ask = []; renderAsk(); setOpen(false);
-};
+$('askClear').onclick = () => archiveAsk();
+$('askOpen').onclick = () => { if (!S.asking) setOpen(false); }; // al cerrarse el notch pasa a la app
 
 // ============ Barra lateral ============
 let barStats = null;
@@ -1295,7 +1303,7 @@ $('trayRescan').addEventListener('click', (e) => { e.preventDefault(); notch.nat
 // ============ Buscador (Alt+S por defecto) ============
 // Apps del menú Inicio, juegos de Steam y archivos del índice de Windows. Las apps y juegos se filtran
 // aquí al instante; los archivos se piden al buscador del sistema con una pequeña espera al teclear.
-const LS = { idx: { apps: [], games: [], usage: {} }, files: [], fileQ: '', sel: 0, items: [], seq: 0, timer: 0 };
+const LS = { idx: { apps: [], games: [], usage: {} }, files: [], fileQ: '', sel: 0, items: [], seq: 0, timer: 0, convs: [] };
 const lsInput = $('lsInput'), lsList = $('lsList');
 const lsNorm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 // Puntuación de una palabra contra un nombre: exacto > empieza > empieza palabra > iniciales > contiene > salteado
@@ -1343,7 +1351,35 @@ function lsHighlight(name, q) {
   return html + (open ? '</b>' : '');
 }
 const lsFileIcons = new Map();
+// "@texto": conversaciones de la app de Claude por su título (las más recientes primero)
+const lsConvMode = () => lsInput.value.trimStart().startsWith('@');
+const lsConvQuery = () => lsInput.value.trimStart().slice(1);
+function lsConvCandidates(q) {
+  const terms = lsNorm(q).split(/\s+/).filter(Boolean);
+  const list = LS.convs.map((c, i) => ({ type: 'conv', id: c.id, name: c.title, sub: c.project ? `Claude · ${c.project}` : 'Claude', rank: i }));
+  if (!terms.length) return list.slice(0, 8);
+  const scored = [];
+  for (const it of list) { const sc = lsScore(it.name, terms); if (sc >= 0) scored.push([sc - it.rank * 2, it]); }
+  return scored.sort((a, b) => b[0] - a[0]).slice(0, 8).map((x) => x[1]);
+}
+async function lsLoadConvs() { try { LS.convs = await notch.claudeConversations(); } catch { LS.convs = []; } if (S.view === 'search' && lsConvMode()) renderLS(); }
+// Autocompletado: lo que falta del título elegido se ve en gris detrás de lo escrito; Tab o → lo completa
+function lsGhostText() {
+  const it = lsConvMode() && LS.items[LS.sel]; if (!it) return '';
+  const typed = lsConvQuery();
+  return it.name.toLowerCase().startsWith(typed.toLowerCase()) ? it.name.slice(typed.length) : '';
+}
+function renderGhost() {
+  const g = $('lsGhost'); const rest = lsGhostText();
+  g.textContent = rest ? lsInput.value + rest : '';
+}
+function lsComplete() {
+  const it = LS.items[LS.sel]; if (!it) return false;
+  lsInput.value = '@' + it.name + ' '; renderLS(); return true;
+}
 function renderLS() {
+  if (lsConvMode()) return renderLSConv();
+  $('lsGhost').textContent = '';
   const q = lsInput.value, qt = q.trim();
   const apps = lsCandidates(q);
   const files = qt.length >= 2 && LS.fileQ === qt
@@ -1352,7 +1388,7 @@ function renderLS() {
   LS.items = [...apps, ...files];
   if (LS.sel >= LS.items.length) LS.sel = Math.max(0, LS.items.length - 1);
   if (!LS.items.length) {
-    const msg = !qt ? 'Escribe para buscar apps, juegos y archivos' : (qt.length >= 2 && LS.fileQ !== qt ? 'Buscando…' : 'Sin resultados');
+    const msg = !qt ? 'Escribe para buscar apps, juegos y archivos · @ para conversaciones de Claude (y mandarles un mensaje)' : (qt.length >= 2 && LS.fileQ !== qt ? 'Buscando…' : 'Sin resultados');
     lsList.innerHTML = `<div class="ls-empty">${msg}</div>`;
     return;
   }
@@ -1374,9 +1410,43 @@ function renderLS() {
   });
   const sel = lsList.querySelector('.ls-item.sel'); if (sel) sel.scrollIntoView({ block: 'nearest' });
 }
+// "@título " + texto: mensaje para esa conversación (el título más largo que encaje)
+function lsConvTarget(q) {
+  const lq = q.toLowerCase(); let best = null;
+  for (const c of LS.convs) {
+    const t = c.title.toLowerCase();
+    if (lq.startsWith(t + ' ') && (!best || c.title.length > best.title.length)) best = c;
+  }
+  return best ? { conv: best, msg: q.slice(best.title.length + 1) } : null;
+}
+function renderLSConv() {
+  const q = lsConvQuery();
+  const target = lsConvTarget(q);
+  if (target) {
+    const { conv, msg } = target;
+    LS.items = [{ type: 'convmsg', id: conv.id, name: conv.title, msg: msg.trim() }];
+    LS.sel = 0;
+    const note = LS.sendErr ? `<div class="ls-send-err">${esc(LS.sendErr)}</div>` : '';
+    lsList.innerHTML = `<div class="ls-group">Mensaje para esta conversación</div>
+      <button class="ls-item sel ls-send" data-i="0"><i class="ls-gly ls-claude">${icon('send')}</i><span class="ls-txt"><span class="ls-name">${esc(conv.title)}</span><span class="ls-sub">${msg.trim() ? esc(msg.trim()) : 'Escribe el mensaje…'}</span></span><span class="ls-kbd">${LS.sending ? 'Enviando…' : LS.sendBusy ? 'Abrir' : 'Enviar'}</span></button>${note}`;
+    $('lsGhost').textContent = '';
+    return;
+  }
+  LS.items = lsConvCandidates(q);
+  if (LS.sel >= LS.items.length) LS.sel = Math.max(0, LS.items.length - 1);
+  if (!LS.items.length) {
+    lsList.innerHTML = `<div class="ls-empty">${LS.convs.length ? 'Ninguna conversación se llama así' : 'No encuentro conversaciones de Claude'}</div>`;
+    renderGhost(); return;
+  }
+  lsList.innerHTML = `<div class="ls-group">Conversaciones de Claude</div>` + LS.items.map((it, i) =>
+    `<button class="ls-item${i === LS.sel ? ' sel' : ''}" data-i="${i}"><i class="ls-gly ls-claude">${icon('claude')}</i><span class="ls-txt"><span class="ls-name">${lsHighlight(it.name, q)}</span><span class="ls-sub">${esc(it.sub)}</span></span><span class="ls-kbd">Enter</span></button>`).join('');
+  const sel = lsList.querySelector('.ls-item.sel'); if (sel) sel.scrollIntoView({ block: 'nearest' });
+  renderGhost();
+}
 function lsQueryFiles() {
   const q = lsInput.value.trim();
   clearTimeout(LS.timer);
+  if (lsConvMode()) return;
   if (q.length < 2) { LS.files = []; LS.fileQ = q; return; }
   LS.timer = setTimeout(async () => {
     const id = ++LS.seq;
@@ -1385,15 +1455,87 @@ function lsQueryFiles() {
     LS.files = list; LS.fileQ = q; renderLS();
   }, 140);
 }
+// ---- Mini chat con una conversación de Claude (se empieza con "@título mensaje" en el buscador) ----
+// S.conv = { id, title, thread: [{ role: 'user'|'claude', text, error }], waiting }
+function renderConv() {
+  const host = $('convHost'); const c = S.conv;
+  if (!c) { host.innerHTML = ''; resize(); return; }
+  const input = host.querySelector('.conv-in');
+  const draft = input ? input.value : '', hadFocus = input && document.activeElement === input;
+  const msgs = c.thread.slice(-6).map((m) => `<div class="conv-msg ${m.role}${m.error ? ' error' : ''}">${esc(m.text)}</div>`).join('')
+    + (c.waiting ? '<div class="conv-msg claude pending"><span class="typing"><i></i><i></i><i></i></span></div>' : '');
+  host.innerHTML = `<div class="conv-reply">
+    <div class="conv-reply-h" data-open title="Abrir en Claude">${icon('claude')}<b>${esc(c.title)}</b><span>${c.waiting ? 'pensando…' : 'abrir en Claude'}</span><i class="conv-x" data-x title="Cerrar">${icon('x')}</i></div>
+    <div class="conv-note">Se guarda en esa conversación y Claude lo tiene en cuenta; en la app se verá la próxima vez que abras Claude.</div>
+    <div class="conv-log">${msgs}</div>
+    <form class="conv-form" autocomplete="off"><input class="conv-in" placeholder="${c.waiting ? 'Esperando respuesta…' : 'Responder…'}" maxlength="8000"><button type="submit" class="icon-btn sm" title="Enviar">${icon('send')}</button></form>
+  </div>`;
+  const ni = host.querySelector('.conv-in'); ni.value = draft;
+  if (hadFocus) ni.focus();
+  const log = host.querySelector('.conv-log'); log.scrollTop = log.scrollHeight;
+  resize();
+}
+async function convSend(text) {
+  const c = S.conv; if (!c || c.waiting || !text.trim()) return;
+  c.thread.push({ role: 'user', text: text.trim() }); c.waiting = true; renderConv();
+  const r = await notch.claudeConvSend(c.id, text.trim());
+  if (S.conv !== c) return;
+  if (!r || !r.ok) { c.waiting = false; c.thread.push({ role: 'claude', error: true, text: (r && r.text) || 'No se pudo enviar.' }); renderConv(); }
+}
+$('convHost').addEventListener('click', (e) => {
+  const c = S.conv; if (!c) return;
+  if (e.target.closest('[data-x]')) { S.conv = null; renderConv(); return; }
+  if (e.target.closest('[data-open]')) { notch.launcherOpen({ type: 'conv', id: c.id }); setOpen(false); return; }
+  if (e.target.closest('.conv-in')) startTyping(e.target.closest('.conv-in'));
+});
+$('convHost').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const i = e.target.querySelector('.conv-in'); const t = i.value; i.value = '';
+  convSend(t);
+});
+async function lsSendConv(it) {
+  if (LS.sending) return;
+  if (LS.sendBusy) { notch.launcherOpen({ type: 'conv', id: it.id }); setOpen(false); return; } // ocupada: se abre en Claude
+  if (!it.msg) return;
+  LS.sending = true; LS.sendErr = ''; renderLS();
+  const r = await notch.claudeConvSend(it.id, it.msg);
+  LS.sending = false;
+  if (r && r.ok) { // la conversación sigue en la pestaña de Claude, donde se puede contestar
+    LS.sendBusy = false; lsInput.value = '';
+    S.conv = { id: it.id, title: it.name, thread: [{ role: 'user', text: it.msg }], waiting: true };
+    setView('claude'); renderConv(); return;
+  }
+  LS.sendErr = (r && r.text) || 'No se pudo enviar.'; LS.sendBusy = !!(r && r.busy);
+  renderLS();
+}
+notch.onConvSendFailed(({ id, title, text }) => {
+  if (!S.conv || S.conv.id !== id) S.conv = { id, title, thread: [] };
+  S.conv.waiting = false; S.conv.thread.push({ role: 'claude', error: true, text: `No se pudo terminar: ${text}` });
+  renderConv();
+});
+notch.onConvSendDone(({ id, title, text }) => {
+  if (!S.conv || S.conv.id !== id) S.conv = { id, title, thread: [] };
+  S.conv.waiting = false; S.conv.thread.push({ role: 'claude', text: text || '(sin texto)' });
+  renderConv(); renderCompact();
+});
 function lsOpen(i, reveal) {
   const it = LS.items[i]; if (!it) return;
+  if (it.type === 'convmsg') return lsSendConv(it);
   if (reveal && it.type === 'file') notch.launcherReveal(it.path);
   else notch.launcherOpen({ type: it.type, id: it.id, path: it.path });
   const k = lsKey(it); LS.idx.usage = LS.idx.usage || {}; LS.idx.usage[k] = (LS.idx.usage[k] || 0) + 1;
   setOpen(false);
 }
-lsInput.addEventListener('input', () => { LS.sel = 0; renderLS(); lsQueryFiles(); });
+lsInput.addEventListener('input', () => {
+  LS.sel = 0; LS.sendErr = ''; LS.sendBusy = false;
+  if (lsConvMode() && Date.now() - (LS.convAt || 0) > 10e3) { LS.convAt = Date.now(); lsLoadConvs(); } // al escribir "@" se leen las conversaciones
+  renderLS(); lsQueryFiles();
+});
 lsInput.addEventListener('keydown', (e) => {
+  // En modo "@": Tab (o → al final del texto) completa el nombre de la conversación elegida
+  if (lsConvMode() && ((e.key === 'Tab' && !e.shiftKey) || (e.key === 'ArrowRight' && lsInput.selectionStart === lsInput.value.length && lsGhostText()))) {
+    if (lsGhostText()) { e.preventDefault(); lsComplete(); return; }
+  }
   if (e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) { e.preventDefault(); LS.sel = Math.min(LS.items.length - 1, LS.sel + 1); renderLS(); }
   else if (e.key === 'ArrowUp' || (e.key === 'Tab' && e.shiftKey)) { e.preventDefault(); LS.sel = Math.max(0, LS.sel - 1); renderLS(); }
   else if (e.key === 'Enter') { e.preventDefault(); lsOpen(LS.sel, e.ctrlKey); }
@@ -1403,6 +1545,7 @@ lsList.addEventListener('click', (e) => { const b = e.target.closest('.ls-item')
 lsList.addEventListener('mousemove', (e) => {
   const b = e.target.closest('.ls-item'); if (!b || +b.dataset.i === LS.sel) return;
   LS.sel = +b.dataset.i; lsList.querySelectorAll('.ls-item').forEach((x) => x.classList.toggle('sel', x === b));
+  if (lsConvMode()) renderGhost();
 });
 async function lsLoadIndex() { try { LS.idx = await notch.launcherIndex(); } catch {} if (S.view === 'search') renderLS(); }
 notch.onLauncherIndex((idx) => { LS.idx = { ...idx, usage: LS.idx.usage || {} }; if (S.view === 'search') renderLS(); });

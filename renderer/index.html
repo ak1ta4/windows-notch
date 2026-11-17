@@ -57,9 +57,9 @@
       <!-- Inicio -->
       <!-- Buscador -->
       <section class="view" data-name="search">
-        <div class="ls-box"><i data-icon="search"></i><input id="lsInput" placeholder="Buscar apps, juegos y archivos" autocomplete="off" spellcheck="false"><span class="ls-key" id="lsKey"></span></div>
+        <div class="ls-box"><i data-icon="search"></i><span class="ls-field"><span class="ls-ghost" id="lsGhost" aria-hidden="true"></span><input id="lsInput" placeholder="Buscar apps, juegos y archivos · @ conversaciones de Claude" autocomplete="off" spellcheck="false"></span><span class="ls-key" id="lsKey"></span></div>
         <div class="ls-list" id="lsList"></div>
-        <div class="ls-hint">&uarr;&darr; elegir &middot; Enter abrir &middot; Ctrl+Enter abrir su carpeta &middot; Esc cerrar</div>
+        <div class="ls-hint">&uarr;&darr; elegir &middot; Enter abrir &middot; @ conversación (Tab completa, luego escribe para enviarle) &middot; Ctrl+Enter carpeta &middot; Esc cerrar</div>
       </section>
 
       <section class="view" data-name="main">
@@ -168,6 +168,7 @@
             <button type="submit" class="icon-btn add" title="Enviar"><i data-icon="send"></i></button>
           </form>
         </div>
+        <div class="conv-host" id="convHost"></div>
         <div class="claude" id="claudeList"></div>
       </section>
 

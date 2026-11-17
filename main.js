@@ -503,7 +503,10 @@ function clearPendingFor(sessionId) {
   for (const [id, p] of pending) if (p.info.session === sessionId) { p.resolve(null); pending.delete(id); }
   send('claude-pending', pendingList());
 }
+// Sesiones que vienen de "Pregúntale a Claude" (abiertas luego en la app): no se listan en el notch
+const isAskSession = (ev) => !!ev.cwd && path.resolve(String(ev.cwd)).toLowerCase() === path.resolve(ASK_DIR).toLowerCase();
 function onClaudeEvent(ev) {
+  if (isAskSession(ev)) { if (ev.session_id && sessions.delete(ev.session_id)) send('claude', [...sessions.values()]); return; }
   log('claude', ev.hook_event_name, ev.notification_type || '', ev.tool_name || '', String(ev.session_id || '').slice(0, 8));
   const id = ev.session_id || 'default';
   const s = sessions.get(id) || { id, project: ev.cwd ? path.basename(ev.cwd) : 'Claude', status: 'idle', verb: '', obj: '', history: [] };
@@ -683,11 +686,13 @@ ipcMain.handle('claude-ask', async (_e, { question }) => {
   question = String(question || '').trim().slice(0, 4000);
   if (!question) return { ok: false, text: '' };
   const base = askSession;
-  let r = await askClaude(question, 'haiku', base);
+  // Título de la sesión en Claude: la primera pregunta de la conversación
+  const title = (base && askTitles.get(base)) || askTitleFrom(question);
+  let r = await askClaude(question, 'haiku', base, title);
   if (r.escalate) {
     log('claude-ask: Haiku lo pasa a Sonnet');
     send('claude-ask-model', MODEL_NAMES.sonnet);
-    r = await askClaude(question, 'sonnet', base);
+    r = await askClaude(question, 'sonnet', base, title);
   }
   if (r.ok && r.session) {
     // Si mientras tanto se empezó otra conversación, esta respuesta queda en su propia sesión
@@ -708,14 +713,21 @@ ipcMain.handle('claude-ask-open', async () => {
   await shell.openExternal(`claude://resume?session=${id}`);
   return true;
 });
-const askClaude = (question, model, base) => new Promise((resolve) => {
+const askTitles = new Map(); // sesión -> título (las copias de una conversación heredan el suyo)
+function askTitleFrom(q) {
+  const t = q.replace(/\s+/g, ' ').trim();
+  return t.length > 60 ? `${t.slice(0, 57).trimEnd()}…` : t;
+}
+const askClaude = (question, model, base, title) => new Promise((resolve) => {
   const exe = config.claudeCli || path.join(os.homedir(), '.local', 'bin', 'claude.exe');
   if (!fs.existsSync(exe)) return resolve({ ok: false, text: `No encuentro el CLI de Claude en ${exe}. Pon su ruta en "claudeCli" de config.json.` });
   if (askProc) { try { askProc.kill(); } catch {} }
   try { fs.mkdirSync(ASK_DIR, { recursive: true }); } catch {}
   const haiku = model === 'haiku';
   const id = crypto.randomUUID(); askOwned.add(id);
+  if (title) askTitles.set(id, title);
   const args = ['-p', '--model', model, '--output-format', 'text', '--tools', '', '--session-id', id,
+    ...(title ? ['--name', title] : []),
     ...(base ? ['--resume', base, '--fork-session'] : []),
     '--append-system-prompt', `${ASK_SYSTEM}\n\n${ESCALATE_RULE}`];
   log('claude-ask', model, question.length, 'caracteres', base ? '(sigue la conversación)' : '(nueva)');
@@ -744,6 +756,9 @@ const askClaude = (question, model, base) => new Promise((resolve) => {
   });
   p.stdin.end(question);
 });
+// (Se probó meterlas solas en una sección "Notch" de Claude: la app no lo permite con ella abierta.)
+try { fs.rmSync(path.join(app.getPath('userData'), 'notch-section-pending.json'), { force: true }); } catch {}
+
 // Abre una terminal con "claude auth login" (el inicio de sesión se hace en el navegador)
 ipcMain.on('claude-login', () => {
   const exe = config.claudeCli || path.join(os.homedir(), '.local', 'bin', 'claude.exe');
@@ -934,6 +949,102 @@ function refreshLauncherIndex() {
   searchCmd({ cmd: 'apps' });
 }
 
+// Conversaciones de la app de Claude (pestaña Code) para buscarlas con "@" en el buscador
+let convCache = { t: 0, list: [] };
+const convFiles = new Map(); // id de la app -> su ficha (para mandarle mensajes)
+function claudeConversations() {
+  if (Date.now() - convCache.t < 10e3) return convCache.list;
+  const roots = [];
+  const la = process.env.LOCALAPPDATA, ra = process.env.APPDATA;
+  try { for (const d of fs.readdirSync(path.join(la, 'Claude-Data'))) roots.push(path.join(la, 'Claude-Data', d, 'claude-code-sessions')); } catch {}
+  if (ra) roots.push(path.join(ra, 'Claude', 'claude-code-sessions'));
+  const list = []; const seen = new Set();
+  const walk = (dir, depth) => {
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const f = path.join(dir, e.name);
+      if (e.isDirectory() && depth < 3) walk(f, depth + 1);
+      else if (e.isFile() && /^local_[\w-]+\.json$/.test(e.name)) {
+        try {
+          const d = JSON.parse(fs.readFileSync(f, 'utf8'));
+          if (d.isArchived || !/^local_[A-Za-z0-9-]{1,64}$/.test(d.sessionId) || seen.has(d.sessionId)) continue;
+          seen.add(d.sessionId); convFiles.set(d.sessionId, f);
+          const project = d.cwd ? path.basename(d.cwd) : '';
+          list.push({ id: d.sessionId, title: String(d.title || project || 'Sin título').slice(0, 120), project, t: d.lastActivityAt || d.createdAt || 0 });
+        } catch {}
+      }
+    }
+  };
+  for (const r of roots) walk(r, 0);
+  list.sort((x, y) => y.t - x.t);
+  convCache = { t: Date.now(), list };
+  return list;
+}
+ipcMain.handle('claude-conversations', () => claudeConversations());
+// Mandar un mensaje a una conversación de la app ("@título mensaje" en el buscador). La app no tiene forma
+// de recibirlo desde fuera, así que se usa el CLI sobre la misma sesión (claude -p --resume), con el modelo
+// y el modo de permisos de esa conversación. Lo que haga sale en la pestaña de Claude del notch (hooks).
+const convSending = new Set();
+const convLastDone = new Map(); // sesión -> cuándo terminó el último envío del notch (su escritura no cuenta como "trabajando")
+// Procesos de Claude que tienen esa sesión abierta. La app deja uno en reposo por cada conversación que has
+// abierto (su CLI con --input-format stream-json); los demás son terminales tuyas.
+const convProcs = (cliId) => new Promise((ok) => {
+  const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const cmd = `@(Get-CimInstance Win32_Process -Filter "Name='claude.exe'" | Where-Object { $_.CommandLine -like '*${cliId}*' } | ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; app = ($_.CommandLine -like '*--input-format*stream-json*' -and $_.CommandLine -like '*Claude-Data*') } }) | ConvertTo-Json -Compress`;
+  execFile(ps, ['-NoProfile', '-Command', cmd], { windowsHide: true, timeout: 10e3 }, (err, out) => {
+    if (err) return ok(null);
+    try { const j = JSON.parse(String(out).trim() || '[]'); ok(Array.isArray(j) ? j : [j]); } catch { ok([]); }
+  });
+});
+function transcriptOf(cliId) {
+  const base = path.join(os.homedir(), '.claude', 'projects');
+  try { for (const d of fs.readdirSync(base)) { const f = path.join(base, d, `${cliId}.jsonl`); if (fs.existsSync(f)) return f; } } catch {}
+  return null;
+}
+ipcMain.handle('claude-conv-send', async (_e, { id, text }) => {
+  text = String(text || '').trim().slice(0, 8000);
+  if (!/^local_[A-Za-z0-9-]{1,64}$/.test(String(id)) || !text) return { ok: false, text: 'Escribe el mensaje.' };
+  claudeConversations();
+  let d; try { d = JSON.parse(fs.readFileSync(convFiles.get(id), 'utf8')); } catch { return { ok: false, text: 'No encuentro esa conversación.' }; }
+  const cli = d.lastAssistantCliSessionId || d.cliSessionId;
+  if (!/^[0-9a-f-]{36}$/i.test(String(cli || ''))) return { ok: false, text: 'Esa conversación no se puede continuar desde fuera.' };
+  if (!d.cwd || !fs.existsSync(d.cwd)) return { ok: false, text: 'Ya no existe la carpeta de esa conversación.' };
+  const tr = transcriptOf(cli);
+  if (!tr) return { ok: false, text: 'No encuentro el historial de esa conversación.' };
+  // Trabajando = un envío del notch en marcha, o su historial cambió hace nada
+  let mtime = 0; try { mtime = fs.statSync(tr).mtimeMs; } catch {}
+  const ours = mtime <= (convLastDone.get(cli) || 0) + 2000; // lo último que se escribió fue la respuesta a nuestro mensaje
+  if (convSending.has(cli) || (!ours && Date.now() - mtime < 20e3)) return { ok: false, busy: true, text: 'Claude está trabajando ahora mismo en esa conversación. Enter para abrirla.' };
+  const procs = await convProcs(cli);
+  if (procs === null) return { ok: false, text: 'No pude comprobar si esa conversación está en uso.' };
+  if (procs.some((p) => !p.app)) return { ok: false, busy: true, text: 'Esa conversación está abierta en una terminal. Enter para abrirla en Claude.' };
+  // La app la tiene abierta en reposo: se cierra ese proceso para que, al volver a ella, la app la recargue
+  // del disco con este mensaje incluido (si no, seguiría con la versión de antes en memoria)
+  for (const p of procs) { try { process.kill(p.pid); log('mensaje a conversación: cierro el proceso en reposo de la app', p.pid); } catch {} }
+  const exe = config.claudeCli || path.join(os.homedir(), '.local', 'bin', 'claude.exe');
+  if (!fs.existsSync(exe)) return { ok: false, text: 'No encuentro el CLI de Claude.' };
+  const args = ['-p', '--resume', cli, '--output-format', 'text'];
+  if (/^claude-[\w.-]+$/.test(String(d.model || ''))) args.push('--model', d.model);
+  if (['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'].includes(d.permissionMode)) args.push('--permission-mode', d.permissionMode);
+  log('mensaje a conversación', id, d.model || '', d.permissionMode || '', text.length, 'caracteres');
+  convSending.add(cli);
+  // Sin AKITA_NOTCH_CHILD: así sus avisos (trabajando, permisos, terminado) llegan al notch
+  const p = spawn(exe, args, { cwd: d.cwd, windowsHide: true });
+  let err = '', reply = '';
+  p.stdout.on('data', (x) => { reply += x; });
+  p.stderr.on('data', (x) => { err += x; });
+  const done = (code, why) => {
+    if (!convSending.delete(cli)) return;
+    convLastDone.set(cli, Date.now());
+    log('mensaje a conversación fin', id, code, why || String(err).trim().slice(0, 200));
+    if (code === 0) send('conv-send-done', { id, title: d.title || path.basename(d.cwd), text: reply.trim().slice(0, 700) });
+    else send('conv-send-failed', { id, title: d.title || path.basename(d.cwd), text: /authenticat|oauth|log in|\/login/i.test(err) ? 'el CLI no tiene la sesión iniciada' : String(why || err).trim().slice(0, 160) || `código ${code}` });
+  };
+  p.on('error', (e) => done(-1, e.message));
+  p.on('close', (code) => done(code));
+  p.stdin.end(text);
+  return { ok: true };
+});
 ipcMain.handle('launcher-index', () => { touchSearcher(); return { ...launcherIndex, usage }; }); // se abre el buscador: ir arrancando
 ipcMain.handle('launcher-files', (_e, q) => new Promise((resolve) => {
   q = String(q || '').trim().slice(0, 100);
@@ -956,6 +1067,8 @@ ipcMain.handle('launcher-open', (_e, it) => {
     shell.openExternal(`steam://rungameid/${it.id}`);
   } else if (it.type === 'file' && typeof it.path === 'string') {
     shell.openPath(it.path);
+  } else if (it.type === 'conv' && /^local_[A-Za-z0-9-]{1,64}$/.test(String(it.id))) {
+    shell.openExternal(`claude://code/continue?session=${it.id}`);
   } else return false;
   return true;
 });

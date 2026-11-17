@@ -233,7 +233,18 @@ Añade los hooks del notch a `~/.claude/settings.json`. La primera vez guarda un
 - Responde **Haiku** (rápido y barato). Si Haiku ve que la pregunta se complica (razonamiento de varios pasos,
   código, análisis a fondo…), la pasa sola a **Sonnet**. En cada respuesta pone qué modelo contestó.
 - Cada conversación se **guarda** como sesión de Claude Code del proyecto **Notch** (la ves con `claude --resume`
-  desde esa carpeta). El botón ↗ la añade a la app de Claude y la abre; el notch empieza entonces una nueva.
+  desde esa carpeta). Al cerrar la conversación (clic fuera del notch, ↗ o ⟲) se añade sola a la app de Claude
+  y el notch empieza una nueva.
+- La sesión se titula con tu primera pregunta. Estas conversaciones no se listan en el notch como sesiones en espera.
+
+**Conversaciones de Claude en el buscador**: escribe `@` para buscarlas por título (Tab completa el nombre,
+Enter la abre en Claude). Si después del título sigues escribiendo, Enter le **manda ese mensaje** a esa
+conversación (con su modelo y su modo de permisos, vía `claude -p --resume`) y su progreso sale en la pestaña
+de Claude del notch como un mini chat: ves su respuesta y puedes **seguir contestando desde ahí** (clic en el título
+para abrirla en Claude). Se guarda en esa conversación, pero la app de Claude no la vuelve a leer mientras
+está abierta: los mensajes se ven en ella la próxima vez que abras Claude. Si la app la tiene abierta en reposo,
+el notch cierra ese proceso para que la app la recargue con el mensaje; si está trabajando o abierta en una terminal,
+no se envía y Enter la abre.
 
 ---
 
