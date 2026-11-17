@@ -669,16 +669,64 @@ ipcMain.handle('claude-ask', (_e, { question, history }) => new Promise((resolve
   p.on('close', (code) => {
     clearTimeout(timer); if (askProc === p) askProc = null;
     log('claude-ask fin', code, out.length);
-    resolve(code === 0 ? { ok: true, text: out.trim() } : { ok: false, text: (out || err || `Claude terminó con código ${code}`).trim().slice(0, 800) });
+    const msg = (out || err || `Claude terminó con código ${code}`).trim();
+    // Sesión del CLI caducada: se avisa en claro y el notch ofrece un botón para iniciar sesión
+    if (code !== 0 && /authenticat|oauth|not logged in|\/login|log in/i.test(msg)) {
+      return resolve({ ok: false, auth: true, text: 'El CLI de Claude Code no tiene la sesión iniciada (caducó). Inicia sesión y vuelve a preguntar.' });
+    }
+    resolve(code === 0 ? { ok: true, text: out.trim() } : { ok: false, text: msg.slice(0, 800) });
   });
   p.stdin.end(prompt);
 }));
+// Abre una terminal con "claude auth login" (el inicio de sesión se hace en el navegador)
+ipcMain.on('claude-login', () => {
+  const exe = config.claudeCli || path.join(os.homedir(), '.local', 'bin', 'claude.exe');
+  if (!fs.existsSync(exe)) return;
+  handForegroundToLaunch();
+  spawn('cmd.exe', ['/c', 'start', '"Claude Code - iniciar sesión"', 'cmd', '/k', `"${exe}" auth login`], { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }).unref();
+});
 ipcMain.handle('claude-sessions', () => [...sessions.values()]);
 // Clic en una sesión: traer al frente la ventana donde corre (terminal, VS Code, app de Claude…).
 // Igual que con la bandeja: el notch se pone delante un instante y el helper (hijo suyo) cede el foco.
+// Sesiones de la app de escritorio de Claude: cada una guarda su id de Claude Code (cliSessionId)
+// junto al id propio (local_...) que acepta el enlace claude://code/continue?session=local_...
+function desktopSessionFor(cliId) {
+  const roots = [];
+  const la = process.env.LOCALAPPDATA, ra = process.env.APPDATA;
+  try { for (const d of fs.readdirSync(path.join(la, 'Claude-Data'))) roots.push(path.join(la, 'Claude-Data', d, 'claude-code-sessions')); } catch {}
+  if (ra) roots.push(path.join(ra, 'Claude', 'claude-code-sessions'));
+  const walk = (dir, depth) => {
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return null; }
+    for (const e of ents) {
+      const f = path.join(dir, e.name);
+      if (e.isDirectory() && depth < 3) { const r = walk(f, depth + 1); if (r) return r; }
+      else if (e.isFile() && /^local_[\w-]+\.json$/.test(e.name)) {
+        let txt; try { txt = fs.readFileSync(f, 'utf8'); } catch { continue; }
+        if (!txt.includes(cliId)) continue; // lectura rápida antes de parsear
+        try {
+          const d = JSON.parse(txt);
+          if (!d.isArchived && (d.cliSessionId === cliId || d.lastAssistantCliSessionId === cliId) && /^local_[A-Za-z0-9-]{1,64}$/.test(d.sessionId)) return d.sessionId;
+        } catch {}
+      }
+    }
+    return null;
+  };
+  for (const r of roots) { const hit = walk(r, 0); if (hit) return hit; }
+  return null;
+}
 ipcMain.on('claude-focus', (_e, id) => {
   const s = sessions.get(id);
-  if (!s || !s.pid) { log('claude-focus: sin proceso para', String(id).slice(0, 8)); return; }
+  if (!s) return;
+  // 1) Sesión de la app de Claude: abre esa conversación exacta
+  const local = /^[0-9a-f-]{36}$/i.test(id) ? desktopSessionFor(id) : null;
+  if (local) {
+    log('claude-focus: app', local);
+    handForegroundToLaunch(); // la app puede ponerse delante sin que asome la barra de tareas
+    shell.openExternal(`claude://code/continue?session=${local}`);
+    return;
+  }
+  // 2) Terminal / VS Code: se trae al frente su ventana
+  if (!s.pid) { log('claude-focus: sin proceso para', String(id).slice(0, 8)); return; }
   const wasFocusable = win.isFocusable();
   if (!wasFocusable) setFocusableSafe(true);
   takeForeground();

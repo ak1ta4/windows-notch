@@ -123,7 +123,13 @@ notch.onCollapse(() => { closePop(); setOpen(false); });
 document.addEventListener('mousedown', (e) => {
   if (S.pop && !e.target.closest('#pop, #barVol')) closePop();
 }, true);
-compact.addEventListener('click', (e) => { if (!e.target.closest('[data-perm]')) setOpen(true); });
+compact.addEventListener('click', (e) => {
+  if (e.target.closest('[data-perm]')) return;
+  // Mensaje de una sesión de Claude: abre esa conversación (los permisos y preguntas abren el panel)
+  const cc = e.target.closest('[data-cc-open]');
+  if (cc) { notch.claudeFocus(cc.dataset.ccOpen); return; }
+  setOpen(true);
+});
 island.addEventListener('contextmenu', (e) => { e.preventDefault(); notch.contextMenu(); });
 compact.addEventListener('auxclick', (e) => { if (e.button === 1) notch.native({ cmd: 'media', action: 'toggle' }); });
 compact.addEventListener('wheel', (e) => {
@@ -441,11 +447,11 @@ function renderCompact() {
     if (cc && cc.status !== 'done') {
       const ico = `<span class="dot ${cc.status}"></span>`;
       const txt = cc.status === 'waiting' ? `<b>${esc(cc.project)}</b> · te necesita` : `<b>${esc(cc.verb)}</b> ${esc(cc.obj || cc.project)}`;
-      leftHtml = `<div class="c-status">${ico}<span class="txt">${txt}</span></div>`;
+      leftHtml = `<div class="c-status" data-cc-open="${esc(cc.id)}" title="Abrir en Claude">${ico}<span class="txt">${txt}</span></div>`;
     } else if (rem) {
       leftHtml = `<div class="c-status"><span class="c-icon ${rem.due ? 'warn' : ''}">${icon('alarm')}</span><span class="txt">${rem.at ? `<b>${esc(rem.at)}</b> ` : ''}${esc(rem.text)}</span></div>`;
     } else if (cc) {
-      leftHtml = `<div class="c-status"><span class="c-icon">${icon('check')}</span><span class="txt"><b>${esc(cc.project)}</b> · listo</span></div>`;
+      leftHtml = `<div class="c-status" data-cc-open="${esc(cc.id)}" title="Abrir en Claude"><span class="c-icon">${icon('check')}</span><span class="txt"><b>${esc(cc.project)}</b> · listo</span></div>`;
     }
   }
   if (leftHtml !== lastCompactKey) { left.innerHTML = leftHtml; lastCompactKey = leftHtml; }
@@ -603,7 +609,7 @@ function renderClaude() {
   const sessHtml = items.map((s) => {
     const st = { working: 'Trabajando', waiting: 'Esperando tu respuesta', done: 'Terminado', idle: 'En espera' }[s.status];
     const ico = s.status === 'done' ? `<span class="c-icon">${icon('check')}</span>` : `<span class="dot ${s.status}" ${s.status === 'idle' ? 'style="background:var(--sub)"' : ''}></span>`;
-    return `<div class="cc ${s.status}"${s.pid ? ` data-cc="${esc(s.id)}" title="Ir a esta sesión"` : ''}>${ico}<div class="cc-main">
+    return `<div class="cc ${s.status}" data-cc="${esc(s.id)}" title="Abrir esta conversación">${ico}<div class="cc-main">
       <div class="cc-proj">${esc(s.project)} <span class="cc-state">· ${st}</span></div>
       <div class="cc-act">${esc(s.verb)} ${esc(s.obj)}</div>
       ${s.history && s.history.length > 1 ? `<div class="cc-hist">${s.history.slice(1, 4).map(esc).join('  ·  ')}</div>` : ''}
@@ -965,7 +971,7 @@ $('trayGrid').addEventListener('contextmenu', (e) => {
 function renderAsk(streaming) {
   const log = $('askLog');
   const items = S.ask.slice(-4);
-  log.innerHTML = items.map((m) => `<div class="msg ${m.role}">${esc(m.text)}</div>`).join('')
+  log.innerHTML = items.map((m) => `<div class="msg ${m.role}${m.error ? ' error' : ''}">${esc(m.text)}${m.auth ? `<button type="button" class="ask-login" id="askLogin">${icon('term')}<span>Iniciar sesión</span></button>` : ''}</div>`).join('')
     + (S.asking ? `<div class="msg claude pending">${streaming ? esc(streaming) : '<span class="typing"><i></i><i></i><i></i></span>'}</div>` : '');
   log.style.display = items.length || S.asking ? '' : 'none';
   log.scrollTop = log.scrollHeight;
@@ -980,8 +986,12 @@ $('askForm').addEventListener('submit', async (e) => {
   S.ask.push({ role: 'user', text: q }); S.asking = true; renderAsk();
   const r = await notch.claudeAsk(q, history);
   S.asking = false;
-  S.ask.push({ role: 'claude', text: r.text || (r.ok ? '(sin respuesta)' : 'No se pudo preguntar a Claude.'), error: !r.ok });
+  S.ask.push({ role: 'claude', text: r.text || (r.ok ? '(sin respuesta)' : 'No se pudo preguntar a Claude.'), error: !r.ok, auth: !!r.auth });
   renderAsk();
+});
+$('askLog').addEventListener('click', (e) => {
+  if (!e.target.closest('#askLogin')) return;
+  notch.claudeLogin(); setOpen(false);
 });
 $('askClear').onclick = () => { S.ask = []; renderAsk(); };
 

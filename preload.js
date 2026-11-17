@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('notch', {
   contextMenu: () => ipcRenderer.send('context-menu'),
   trayClick: (key, button) => ipcRenderer.send('tray-click', { key, button }),
   claudeAsk: (question, history) => ipcRenderer.invoke('claude-ask', { question, history }),
+  claudeLogin: () => ipcRenderer.send('claude-login'),
   onClaudeAskChunk: on('claude-ask-chunk'),
   onLauncher: on('launcher'),
   onLauncherIndex: on('launcher-index'),
