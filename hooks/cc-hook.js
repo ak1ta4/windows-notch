@@ -17,6 +17,11 @@ process.stdin.on('end', () => {
   const perm = ev.hook_event_name === 'PermissionRequest';
   // Solo lo necesario: nada de salidas de herramientas ni contenido de archivos.
   const i = ev.tool_input || {};
+  // AskUserQuestion: se mandan las preguntas y opciones para poder contestarlas desde el notch
+  const qs = Array.isArray(i.questions) ? i.questions.slice(0, 4).map((q) => ({
+    question: String(q.question || '').slice(0, 500), header: String(q.header || '').slice(0, 40), multiSelect: !!q.multiSelect,
+    options: (Array.isArray(q.options) ? q.options : []).slice(0, 6).map((o) => ({ label: String(o.label || '').slice(0, 120), description: String(o.description || '').slice(0, 240) })),
+  })) : undefined;
   const body = JSON.stringify({
     hook_event_name: ev.hook_event_name, session_id: ev.session_id, cwd: ev.cwd,
     ppid: process.ppid, // para que el notch encuentre la ventana de la sesión (terminal, VS Code, app)
@@ -24,7 +29,7 @@ process.stdin.on('end', () => {
     tool_input: {
       file_path: i.file_path, notebook_path: i.notebook_path,
       command: i.command ? String(i.command).slice(0, perm ? 300 : 80) : undefined,
-      pattern: i.pattern, url: i.url, query: i.query, description: i.description,
+      pattern: i.pattern, url: i.url, query: i.query, description: i.description, questions: qs,
     },
   });
   const req = http.request({
@@ -36,7 +41,12 @@ process.stdin.on('end', () => {
     let out = '';
     res.on('data', (c) => { out += c; });
     res.on('end', () => {
-      let decision = null; try { decision = JSON.parse(out).decision; } catch {}
+      let decision = null, answers = null;
+      try { const r = JSON.parse(out); decision = r.decision; answers = r.answers; } catch {}
+      // Respuestas elegidas en el notch: van en la entrada de la herramienta y Claude no vuelve a preguntar
+      if (decision === 'allow' && answers && typeof answers === 'object') {
+        return done({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow', updatedInput: { ...i, answers } } } });
+      }
       if (decision === 'allow') return done({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } });
       if (decision === 'deny') return done({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: 'Denegado desde el notch' } } });
       done();

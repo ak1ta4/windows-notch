@@ -164,7 +164,7 @@ document.addEventListener('mousedown', (e) => {
   const inp = e.target.closest('input[type=text], input[type=datetime-local]');
   if (inp) startTyping(inp);
   // En el buscador, pulsar un resultado no debe soltar el foco: al soltarlo se cerraba antes del clic
-  else if (S.typing && !e.target.closest('.task-form, .quick-due, .due-picker, .task.editing, .ask-form, [data-name=search]')) stopTyping();
+  else if (S.typing && !e.target.closest('.task-form, .quick-due, .due-picker, .task.editing, .ask-form, .q-card, [data-name=search]')) stopTyping();
 });
 
 // ============ Reloj ============
@@ -429,7 +429,10 @@ function renderCompact() {
     right.insertAdjacentHTML('beforeend', `<div class="c-vol"><div class="vbar"><span style="width:${v * 100}%"></span></div>${Math.round(v * 100)}</div>`);
   } else if (S.pending.length) {
     const p = S.pending[0];
-    leftHtml = `<div class="c-status perm"><span class="c-icon warn">${icon('shield')}</span><span class="txt"><b>${esc(p.project)}</b> · ${esc(p.verb)} ${esc(p.obj)}</span>
+    leftHtml = p.questions
+      ? `<div class="c-status perm"><span class="c-icon warn">${icon('claude')}</span><span class="txt"><b>${esc(p.project)}</b> · te pregunta: ${esc(p.questions[0].question)}</span>
+        <span class="mini-open">Ver</span></div>`
+      : `<div class="c-status perm"><span class="c-icon warn">${icon('shield')}</span><span class="txt"><b>${esc(p.project)}</b> · ${esc(p.verb)} ${esc(p.obj)}</span>
       <button class="mini ok" data-perm="allow" data-id="${p.id}" title="Permitir">${icon('check')}</button>
       <button class="mini no" data-perm="deny" data-id="${p.id}" title="Denegar">${icon('x')}</button></div>`;
   } else {
@@ -515,16 +518,86 @@ function drawViz() {
 }
 
 // ============ Claude Code ============
+// Respuestas que vas eligiendo: id del permiso -> [{ sel: Set de opciones, other: texto libre }]
+const qAns = {};
+const qState = (p) => (qAns[p.id] = qAns[p.id] || p.questions.map(() => ({ sel: new Set(), other: '' })));
+function qAnswers(p) {
+  const st = qState(p); const out = {};
+  for (let k = 0; k < p.questions.length; k++) {
+    const vals = [...st[k].sel]; if (st[k].other.trim()) vals.push(st[k].other.trim());
+    if (!vals.length) return null;
+    out[p.questions[k].question] = vals.join(', ');
+  }
+  return out;
+}
+function questionCard(p) {
+  const st = qState(p); const ready = !!qAnswers(p);
+  const qs = p.questions.map((q, k) => `<div class="q-block">
+      <div class="q-head">${q.header ? `<span class="q-tag">${esc(q.header)}</span>` : ''}${q.multiSelect ? '<span class="q-multi">Varias opciones</span>' : ''}</div>
+      <div class="q-text">${esc(q.question)}</div>
+      <div class="q-opts">${q.options.map((o) => `<button type="button" class="q-opt ${st[k].sel.has(o.label) ? 'on' : ''}" data-q-id="${p.id}" data-q="${k}" data-opt="${esc(o.label)}">
+          <span class="q-check">${icon('check')}</span><span class="q-ol"><b>${esc(o.label)}</b>${o.description ? `<small>${esc(o.description)}</small>` : ''}</span></button>`).join('')}
+        <input type="text" class="q-other ${st[k].other.trim() ? 'on' : ''}" data-q-id="${p.id}" data-q="${k}" placeholder="Otra respuesta…" maxlength="500" value="${esc(st[k].other)}">
+      </div></div>`).join('');
+  return `<div class="perm-card q-card" data-card="${p.id}">
+      <div class="perm-top"><span class="c-icon warn">${icon('claude')}</span>
+        <div class="perm-main"><div class="perm-title"><b>${esc(p.project)}</b> te pregunta</div></div></div>
+      ${qs}
+      <div class="perm-btns">
+        <button class="pbtn no" data-perm="deny" data-id="${p.id}">${icon('x')}<span>Denegar</span></button>
+        <button class="pbtn ok" data-perm="allow" data-id="${p.id}" ${ready ? '' : 'disabled'} title="${ready ? 'Mandar la respuesta a Claude' : 'Elige una opción en cada pregunta'}">${icon('send')}<span>Responder</span></button>
+      </div></div>`;
+}
 function permCards() {
-  return S.pending.map((p) => `<div class="perm-card">
+  return S.pending.map((p) => (p.questions ? questionCard(p) : `<div class="perm-card">
       <div class="perm-top"><span class="c-icon warn">${icon('shield')}</span>
         <div class="perm-main"><div class="perm-title"><b>${esc(p.project)}</b> quiere ${esc(p.verb.toLowerCase())} <b>${esc(p.obj)}</b></div>
         ${p.detail ? `<code class="perm-detail">${esc(p.detail)}</code>` : ''}</div></div>
       <div class="perm-btns">
         <button class="pbtn no" data-perm="deny" data-id="${p.id}">${icon('x')}<span>Denegar</span></button>
         <button class="pbtn ok" data-perm="allow" data-id="${p.id}">${icon('check')}<span>Permitir</span></button>
-      </div></div>`).join('');
+      </div></div>`)).join('');
 }
+// Solo se redibujan las tarjetas si cambian los permisos pendientes o lo que has elegido
+// (las sesiones de Claude se actualizan muy a menudo y se perdería lo que escribes en "Otra respuesta")
+let lastPermKey = '';
+function renderPerms(force) {
+  const key = S.pending.map((p) => p.id).join('|');
+  if (!force && key === lastPermKey) return;
+  lastPermKey = key;
+  for (const id of Object.keys(qAns)) if (!S.pending.some((p) => p.id === id)) delete qAns[id];
+  const cards = permCards();
+  $('permList').innerHTML = cards;
+  $('permMain').innerHTML = cards;
+  resize();
+}
+const permOf = (id) => S.pending.find((p) => p.id === id);
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('.q-opt'); if (!b) return;
+  const p = permOf(b.dataset.qId); if (!p) return;
+  const k = +b.dataset.q; const st = qState(p)[k]; const label = b.dataset.opt;
+  if (p.questions[k].multiSelect) { if (st.sel.has(label)) st.sel.delete(label); else st.sel.add(label); }
+  else { const was = st.sel.has(label); st.sel.clear(); if (!was) st.sel.add(label); st.other = ''; }
+  renderPerms(true);
+});
+document.addEventListener('input', (e) => {
+  const i = e.target.closest('.q-other'); if (!i) return;
+  const p = permOf(i.dataset.qId); if (!p) return;
+  const k = +i.dataset.q; const st = qState(p)[k];
+  st.other = i.value;
+  if (i.value.trim() && !p.questions[k].multiSelect && st.sel.size) {
+    st.sel.clear();
+    i.closest('.q-block').querySelectorAll('.q-opt.on').forEach((x) => x.classList.remove('on'));
+  }
+  i.classList.toggle('on', !!i.value.trim());
+  const ready = !!qAnswers(p);
+  document.querySelectorAll(`[data-card="${p.id}"] .pbtn.ok`).forEach((x) => { x.disabled = !ready; });
+});
+document.addEventListener('keydown', (e) => {
+  const i = e.target.closest && e.target.closest('.q-other'); if (!i || e.key !== 'Enter') return;
+  const p = permOf(i.dataset.qId); const a = p && qAnswers(p);
+  if (a) { stopTyping(); notch.claudeDecide(p.id, 'allow', a); }
+});
 function renderClaude() {
   const items = S.claude.filter((s) => s.status !== 'idle' || Date.now() - s.t < 10 * 60e3);
   const sessHtml = items.map((s) => {
@@ -537,9 +610,7 @@ function renderClaude() {
     </div></div>`;
   }).join('');
   $('claudeList').innerHTML = sessHtml || (S.pending.length ? '' : '<div class="empty">Sin sesiones de Claude Code activas.<br>Cuando Claude trabaje, pida permiso o termine, aparecerá aquí.</div>');
-  const cards = permCards();
-  $('permList').innerHTML = cards;
-  $('permMain').innerHTML = cards;
+  renderPerms();
   const busy = S.pending.length + S.claude.filter((s) => s.status === 'working' || s.status === 'waiting').length;
   $('ccBadge').textContent = busy || '';
   $('ccBadge').classList.toggle('warn', S.pending.length > 0);
@@ -567,6 +638,13 @@ $('claudeList').addEventListener('click', (e) => {
 document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-perm]'); if (!b) return;
   e.stopPropagation();
+  if (b.disabled) return;
+  const p = permOf(b.dataset.id);
+  if (p && p.questions && b.dataset.perm === 'allow') {
+    const a = qAnswers(p); if (!a) return;
+    stopTyping(); notch.claudeDecide(p.id, 'allow', a); return;
+  }
+  if (p && p.questions) stopTyping();
   notch.claudeDecide(b.dataset.id, b.dataset.perm);
 }, true);
 

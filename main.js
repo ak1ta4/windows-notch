@@ -542,12 +542,16 @@ function onPermission(ev, res, req) {
     detail: String(i.command || i.file_path || i.url || i.description || '').slice(0, 300),
     t: Date.now(),
   };
+  if (Array.isArray(i.questions) && i.questions.length) {
+    info.questions = i.questions;
+    info.verb = 'Te pregunta'; info.obj = String(i.questions[0].header || i.questions[0].question || '').slice(0, 48); info.detail = '';
+  }
   let done = false;
-  const finish = (decision) => {
+  const finish = (decision, answers) => {
     if (done) return; done = true;
     pending.delete(id); clearTimeout(timer);
     send('claude-pending', pendingList());
-    if (!res.writableEnded) res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ decision }));
+    if (!res.writableEnded) res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ decision, answers }));
   };
   const timer = setTimeout(() => finish(null), 110e3); // después, sigue el diálogo normal de Claude
   pending.set(id, { info, resolve: finish });
@@ -558,9 +562,16 @@ function onPermission(ev, res, req) {
   send('claude-pending', pendingList());
   send('claude-alert', { kind: 'Permission', session: s || { id: info.session, project: info.project } });
 }
-ipcMain.on('claude-decide', (_e, { id, decision }) => {
+ipcMain.on('claude-decide', (_e, { id, decision, answers }) => {
   const p = pending.get(id);
-  if (p && (decision === 'allow' || decision === 'deny')) p.resolve(decision);
+  if (!p || (decision !== 'allow' && decision !== 'deny')) return;
+  // Respuestas a AskUserQuestion: { "texto de la pregunta": "opción elegida" }
+  let ans;
+  if (decision === 'allow' && p.info.questions && answers && typeof answers === 'object') {
+    ans = {};
+    for (const q of p.info.questions) if (typeof answers[q.question] === 'string') ans[q.question] = answers[q.question].slice(0, 1000);
+  }
+  p.resolve(decision, ans);
 });
 ipcMain.handle('claude-pending', () => pendingList());
 

@@ -584,3 +584,26 @@ input[type=range].muted::-webkit-slider-runnable-track { background: linear-grad
 /* ================= v14: cursor de mano en todo lo pulsable ================= */
 button:disabled { cursor: default; }
 input[type=range], input[type=range]::-webkit-slider-thumb, select, [data-tray], [data-view], [data-open-view], .compact { cursor: pointer; }
+
+/* ================= v15: preguntas de Claude (AskUserQuestion) ================= */
+.q-card .perm-top { align-items: center; }
+.q-block { margin: 10px 0 0 28px; }
+.q-head { display: flex; gap: 6px; margin-bottom: 4px; }
+.q-tag { font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--yellow); background: rgba(216,166,87,.12); padding: 2px 7px; border-radius: 8px; }
+.q-multi { font-size: 10px; color: var(--sub); padding: 2px 0; }
+.q-text { font-size: 13px; color: var(--text); line-height: 1.4; margin-bottom: 8px; white-space: pre-wrap; }
+.q-opts { display: flex; flex-direction: column; gap: 4px; }
+.q-opt { display: flex; align-items: flex-start; gap: 9px; text-align: left; padding: 7px 10px; border-radius: 12px; background: var(--card-2); box-shadow: inset 0 0 0 1px transparent; transition: background .12s, box-shadow .12s; }
+.q-opt:hover { background: var(--line); }
+.q-opt.on { box-shadow: inset 0 0 0 1.5px var(--text); background: var(--line); }
+.q-check { flex: none; width: 16px; height: 16px; margin-top: 1px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--sub); display: grid; place-items: center; color: transparent; }
+.q-opt.on .q-check { background: var(--text); box-shadow: none; color: #000; }
+.q-check svg { width: 10px; height: 10px; }
+.q-ol { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.q-ol b { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.q-ol small { font-size: 11px; color: var(--sub); line-height: 1.35; }
+.q-other { background: transparent; border: 0; outline: 0; color: var(--text); font: inherit; font-size: 12px; padding: 7px 10px; border-radius: 12px; box-shadow: inset 0 0 0 1px var(--line); }
+.q-other::placeholder { color: var(--sub); }
+.q-other:focus, .q-other.on { box-shadow: inset 0 0 0 1.5px var(--text); }
+.pbtn:disabled { opacity: .4; filter: none; cursor: default; }
+.mini-open { flex: none; font-size: 11px; font-weight: 600; color: #000; background: var(--yellow); padding: 3px 9px; border-radius: 10px; margin-left: 6px; }
