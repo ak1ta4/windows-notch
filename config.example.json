@@ -30,6 +30,7 @@
   "collapseDelay": 1200,
   "tray": true,
   "launcherHotkey": "Ctrl+Q",
+  "askHotkey": "Alt+Q",
   "barTrayPins": [],
   "rim": true,
   "rimStrength": 1,

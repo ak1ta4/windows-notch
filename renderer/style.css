@@ -616,3 +616,7 @@ input[type=range], input[type=range]::-webkit-slider-thumb, select, [data-tray],
 .ask-login { display: flex; align-items: center; gap: 6px; margin-top: 8px; height: 28px; padding: 0 12px; border-radius: 14px; background: var(--text); color: #000; font-size: 12px; font-weight: 600; }
 .ask-login:hover { background: #fff; }
 .ask-login svg { width: 13px; height: 13px; }
+
+/* ================= v18: modelo que responde en "Pregúntale a Claude" (Haiku / Sonnet) ================= */
+.msg-ai { display: block; font-size: 10px; font-weight: 700; letter-spacing: .03em; color: var(--orange); margin-bottom: 2px; opacity: .85; }
+#askOpen[hidden] { display: none; }

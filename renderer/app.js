@@ -146,6 +146,8 @@ window.addEventListener('keydown', (e) => {
 // El buscador se cierra al pasar a otra ventana, pero solo si llegó a tener el foco (al abrirse hay un parpadeo de foco)
 window.addEventListener('focus', () => { if (S.open && S.view === 'search') LS.focused = true; });
 window.addEventListener('blur', () => {
+  // Si el foco lo soltó el propio notch (p. ej. al pasar del buscador a otra pestaña), no es "cambiar de ventana"
+  if (Date.now() - (S.selfBlurAt || 0) < 400) return;
   if (S.open && S.view === 'search') { if (LS.focused) setOpen(false); return; }
   if (S.typing) stopTyping();
 });
@@ -161,6 +163,7 @@ function startTyping(el) {
 }
 function stopTyping() {
   if (!S.typing) return;
+  S.selfBlurAt = Date.now();
   S.typing = false; notch.hold(false); notch.focusable(false);
   if (document.activeElement) document.activeElement.blur();
 }
@@ -971,29 +974,39 @@ $('trayGrid').addEventListener('contextmenu', (e) => {
 function renderAsk(streaming) {
   const log = $('askLog');
   const items = S.ask.slice(-4);
-  log.innerHTML = items.map((m) => `<div class="msg ${m.role}${m.error ? ' error' : ''}">${esc(m.text)}${m.auth ? `<button type="button" class="ask-login" id="askLogin">${icon('term')}<span>Iniciar sesión</span></button>` : ''}</div>`).join('')
-    + (S.asking ? `<div class="msg claude pending">${streaming ? esc(streaming) : '<span class="typing"><i></i><i></i><i></i></span>'}</div>` : '');
+  log.innerHTML = items.map((m) => `<div class="msg ${m.role}${m.error ? ' error' : ''}">${m.ai ? `<small class="msg-ai">${esc(m.ai)}</small>` : ''}${esc(m.text)}${m.auth ? `<button type="button" class="ask-login" id="askLogin">${icon('term')}<span>Iniciar sesión</span></button>` : ''}</div>`).join('')
+    + (S.asking ? `<div class="msg claude pending"><small class="msg-ai">${esc(S.askModel || 'Haiku')}${S.askModel === 'Sonnet' && !streaming ? ' · pregunta complicada, pensando más' : ''}</small>${streaming ? esc(streaming) : '<span class="typing"><i></i><i></i><i></i></span>'}</div>` : '');
   log.style.display = items.length || S.asking ? '' : 'none';
+  $('askOpen').hidden = S.asking || !S.ask.some((m) => m.role === 'claude' && !m.error);
   log.scrollTop = log.scrollHeight;
   resize();
 }
 notch.onClaudeAskChunk((txt) => { if (S.asking) renderAsk(txt); });
+// Haiku vio la pregunta complicada y la pasa a Sonnet
+notch.onClaudeAskModel((m) => { S.askModel = m; if (S.asking) renderAsk(); });
 $('askForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const q = $('askText').value.trim(); if (!q || S.asking) return;
   $('askText').value = '';
-  const history = S.ask.slice();
   S.ask.push({ role: 'user', text: q }); S.asking = true; renderAsk();
-  const r = await notch.claudeAsk(q, history);
+  S.askModel = 'Haiku';
+  const r = await notch.claudeAsk(q);
   S.asking = false;
-  S.ask.push({ role: 'claude', text: r.text || (r.ok ? '(sin respuesta)' : 'No se pudo preguntar a Claude.'), error: !r.ok, auth: !!r.auth });
+  S.ask.push({ role: 'claude', ai: r.model, text: r.text || (r.ok ? '(sin respuesta)' : 'No se pudo preguntar a Claude.'), error: !r.ok, auth: !!r.auth });
   renderAsk();
 });
+
+
 $('askLog').addEventListener('click', (e) => {
   if (!e.target.closest('#askLogin')) return;
   notch.claudeLogin(); setOpen(false);
 });
-$('askClear').onclick = () => { S.ask = []; renderAsk(); };
+$('askClear').onclick = () => { S.ask = []; notch.claudeAskReset(); renderAsk(); };
+// Se queda guardada como sesión de Claude Code; este botón la añade a la app de Claude y la abre
+$('askOpen').onclick = async () => {
+  if (S.asking || !(await notch.claudeAskOpen())) return;
+  S.ask = []; renderAsk(); setOpen(false);
+};
 
 // ============ Barra lateral ============
 let barStats = null;
@@ -1394,5 +1407,10 @@ lsList.addEventListener('mousemove', (e) => {
 async function lsLoadIndex() { try { LS.idx = await notch.launcherIndex(); } catch {} if (S.view === 'search') renderLS(); }
 notch.onLauncherIndex((idx) => { LS.idx = { ...idx, usage: LS.idx.usage || {} }; if (S.view === 'search') renderLS(); });
 notch.onLauncher(() => { if (S.open && S.view === 'search') setOpen(false); else { setOpen(true); setView('search'); } });
+// Atajo de la IA (Alt+Q por defecto): abre "Pregúntale a…" listo para escribir; pulsarlo otra vez lo cierra
+notch.onAskHotkey(() => {
+  if (S.open && S.view === 'claude' && S.typing) { setOpen(false); return; }
+  setOpen(true); setView('claude'); startTyping($('askText'));
+});
 lsLoadIndex();
 notch.config().then((c) => { $('lsKey').textContent = (c && c.launcherHotkey) || 'Alt+S'; });

@@ -35,6 +35,7 @@ const defaultConfig = {
   collapseDelay: 1200,     // ms antes de cerrar el panel al sacar el ratón
   tray: true,              // bandeja del sistema dentro del notch
   launcherHotkey: 'Alt+S', // atajo global del buscador (formato de Electron: 'Alt+S', 'Ctrl+Shift+Space'...)
+  askHotkey: 'Alt+Q',      // atajo global para preguntar a la IA (apartado de Claude)
   barTrayPins: [],         // iconos de la bandeja fijados en la barra (se eligen en la pestaña Bandeja)
   rim: true,               // borde y halo alrededor de la isla (para que se vea en OLED)
   rimStrength: 1,          // intensidad del borde: 0.5 suave, 1 normal, 2 marcado
@@ -42,11 +43,12 @@ const defaultConfig = {
 };
 function loadConfig() {
   const file = path.join(__dirname, 'config.json');
-  let user = {};
-  try { user = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+  let user = {}, broken = false;
+  try { user = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { broken = fs.existsSync(file); if (broken) console.error('config.json con error de formato:', e.message); }
   const merged = { ...defaultConfig, ...user };
   // Añade al archivo las opciones nuevas sin tocar las que ya tienes.
-  if (Object.keys(defaultConfig).some((k) => !(k in user))) {
+  // Si el archivo existe pero tiene un error de formato, NO se reescribe (se perderían tus datos y claves).
+  if (!broken && Object.keys(defaultConfig).some((k) => !(k in user))) {
     try { fs.writeFileSync(file, JSON.stringify(merged, null, 2)); } catch {}
   }
   return merged;
@@ -616,7 +618,7 @@ ipcMain.handle('set-pins', (_e, pins) => {
   config.barTrayPins = pins.filter((p) => typeof p === 'string' && p.length < 120).slice(0, 40);
   const file = path.join(__dirname, 'config.json');
   try {
-    let user = {}; try { user = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+    let user = {}; try { user = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { if (fs.existsSync(file)) throw new Error('config.json tiene un error de formato: no se toca'); }
     user.barTrayPins = config.barTrayPins;
     fs.writeFileSync(file, JSON.stringify(user, null, 2));
   } catch (e) { log('no se pudo guardar config', e.message); }
@@ -646,38 +648,100 @@ ipcMain.on('tray-click', (_e, { key, button }) => {
   if (!wasFocusable) setTimeout(() => { if (!hold) releaseFocus(); }, 1500);
 });
 
-// ---------------- "Pregúntale a Claude" (claude -p, sin herramientas) ----------------
+// ---------------- "Pregúntale a Claude" (claude -p, sin herramientas; se guarda en Claude Code) ----------------
 let askProc = null;
-ipcMain.handle('claude-ask', (_e, { question, history }) => new Promise((resolve) => {
+// ---- "Pregúntale a Claude": siempre Haiku (rápido y barato). Si Haiku ve que la pregunta se le
+// complica, contesta solo ESCALAR (no se muestra) y se repite la pregunta con Sonnet.
+const ASK_SYSTEM = 'Respondes desde un notch de escritorio: en español, breve y directo (máx. ~120 palabras), sin tablas ni encabezados.';
+const ESCALATE = 'ESCALAR';
+// Al seguir una conversación el CLI reutiliza el prompt de sistema del primer turno (aunque cambie el
+// modelo), así que la regla es una sola y depende del modelo que esté respondiendo.
+const ESCALATE_RULE = `Regla de modelos. Si eres Claude Haiku: cuando la pregunta requiera razonamiento de varios pasos, matemáticas o lógica no triviales, escribir o depurar código que no sea trivial, un análisis o comparación a fondo, o conocimiento muy especializado en el que podrías equivocarte, NO la respondas: contesta exactamente "${ESCALATE}" y nada más; todo lo demás (dudas rápidas, definiciones, traducciones, conversiones, recomendaciones sencillas, charla) lo respondes tú. Si eres Claude Sonnet o cualquier otro modelo: responde SIEMPRE a la pregunta y nunca contestes "${ESCALATE}".`;
+const MODEL_NAMES = { haiku: 'Haiku', sonnet: 'Sonnet' };
+// Cada conversación del notch se guarda como una sesión de Claude Code en la carpeta "Notch"
+// (así sale como proyecto "Notch" en Claude y en `claude --resume`). Cada pregunta continúa la
+// sesión con una copia nueva (--fork-session) y se borra la anterior: así un intento de Haiku
+// que pasa a Sonnet no deja rastro y solo queda una sesión por conversación.
+const ASK_DIR = path.join(app.getPath('userData'), 'Notch');
+const CLAUDE_PROJECTS = path.join(os.homedir(), '.claude', 'projects');
+let askSession = null;        // sesión que tiene la conversación actual
+const askOwned = new Set();   // sesiones creadas por el notch (las únicas que puede borrar)
+const askImported = new Set(); // ya pasadas a la app de Claude: no se tocan
+function dropAskSession(id) {
+  if (!id || !askOwned.has(id) || askImported.has(id)) return;
+  askOwned.delete(id);
+  try {
+    for (const d of fs.readdirSync(CLAUDE_PROJECTS)) {
+      const f = path.join(CLAUDE_PROJECTS, d, `${id}.jsonl`);
+      if (fs.existsSync(f)) { fs.rmSync(f, { force: true }); fs.rmSync(path.join(CLAUDE_PROJECTS, d, id), { recursive: true, force: true }); }
+    }
+  } catch (e) { log('claude-ask: no pude borrar la copia', id, e.message); }
+}
+ipcMain.handle('claude-ask', async (_e, { question }) => {
   question = String(question || '').trim().slice(0, 4000);
-  if (!question) return resolve({ ok: false, text: '' });
+  if (!question) return { ok: false, text: '' };
+  const base = askSession;
+  let r = await askClaude(question, 'haiku', base);
+  if (r.escalate) {
+    log('claude-ask: Haiku lo pasa a Sonnet');
+    send('claude-ask-model', MODEL_NAMES.sonnet);
+    r = await askClaude(question, 'sonnet', base);
+  }
+  if (r.ok && r.session) {
+    // Si mientras tanto se empezó otra conversación, esta respuesta queda en su propia sesión
+    if (askSession === base) { askSession = r.session; dropAskSession(base); }
+  }
+  delete r.session;
+  return r;
+});
+// Nueva conversación: la anterior se queda guardada tal cual
+ipcMain.handle('claude-ask-reset', () => { askSession = null; return true; });
+// Abre la conversación en la app de Claude (la importa) y el notch empieza una nueva
+ipcMain.handle('claude-ask-open', async () => {
+  if (!askSession) return false;
+  const id = askSession;
+  askImported.add(id); askSession = null;
+  log('claude-ask: abro en Claude', id);
+  try { handForegroundToLaunch(); } catch {}
+  await shell.openExternal(`claude://resume?session=${id}`);
+  return true;
+});
+const askClaude = (question, model, base) => new Promise((resolve) => {
   const exe = config.claudeCli || path.join(os.homedir(), '.local', 'bin', 'claude.exe');
   if (!fs.existsSync(exe)) return resolve({ ok: false, text: `No encuentro el CLI de Claude en ${exe}. Pon su ruta en "claudeCli" de config.json.` });
   if (askProc) { try { askProc.kill(); } catch {} }
-  const prev = (Array.isArray(history) ? history : []).slice(-6)
-    .map((h) => `${h.role === 'user' ? 'Usuario' : 'Claude'}: ${String(h.text).slice(0, 2000)}`).join('\n\n');
-  const prompt = prev ? `Conversación hasta ahora:\n${prev}\n\nNueva pregunta: ${question}` : question;
-  const args = ['-p', '--output-format', 'text', '--no-session-persistence', '--tools', '',
-    '--append-system-prompt', 'Respondes desde un notch de escritorio: en español, breve y directo (máx. ~120 palabras), sin tablas ni encabezados.'];
-  log('claude-ask', question.length, 'caracteres');
+  try { fs.mkdirSync(ASK_DIR, { recursive: true }); } catch {}
+  const haiku = model === 'haiku';
+  const id = crypto.randomUUID(); askOwned.add(id);
+  const args = ['-p', '--model', model, '--output-format', 'text', '--tools', '', '--session-id', id,
+    ...(base ? ['--resume', base, '--fork-session'] : []),
+    '--append-system-prompt', `${ASK_SYSTEM}\n\n${ESCALATE_RULE}`];
+  log('claude-ask', model, question.length, 'caracteres', base ? '(sigue la conversación)' : '(nueva)');
   let out = '', err = '';
-  const p = askProc = spawn(exe, args, { cwd: os.homedir(), windowsHide: true, env: { ...process.env, AKITA_NOTCH_CHILD: '1' } });
+  // Con Haiku no se enseña nada hasta saber que no empieza por ESCALAR
+  const mayEscalate = () => haiku && ESCALATE.startsWith(out.trim().toUpperCase().slice(0, ESCALATE.length));
+  const p = askProc = spawn(exe, args, { cwd: ASK_DIR, windowsHide: true, env: { ...process.env, AKITA_NOTCH_CHILD: '1' } });
   const timer = setTimeout(() => { try { p.kill(); } catch {} }, 120e3);
-  p.stdout.on('data', (d) => { out += d; send('claude-ask-chunk', out); });
+  p.stdout.on('data', (d) => { out += d; if (!mayEscalate()) send('claude-ask-chunk', out); });
   p.stderr.on('data', (d) => { err += d; });
-  p.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, text: e.message }); });
+  p.on('error', (e) => { clearTimeout(timer); dropAskSession(id); resolve({ ok: false, text: e.message }); });
   p.on('close', (code) => {
     clearTimeout(timer); if (askProc === p) askProc = null;
-    log('claude-ask fin', code, out.length);
+    log('claude-ask fin', model, code, out.length);
     const msg = (out || err || `Claude terminó con código ${code}`).trim();
+    const fail = (r) => { dropAskSession(id); resolve(r); };
     // Sesión del CLI caducada: se avisa en claro y el notch ofrece un botón para iniciar sesión
     if (code !== 0 && /authenticat|oauth|not logged in|\/login|log in/i.test(msg)) {
-      return resolve({ ok: false, auth: true, text: 'El CLI de Claude Code no tiene la sesión iniciada (caducó). Inicia sesión y vuelve a preguntar.' });
+      return fail({ ok: false, auth: true, text: 'El CLI de Claude Code no tiene la sesión iniciada (caducó). Inicia sesión y vuelve a preguntar.' });
     }
-    resolve(code === 0 ? { ok: true, text: out.trim() } : { ok: false, text: msg.slice(0, 800) });
+    if (code === 0 && new RegExp(`^\\W*${ESCALATE}\\W*$`, 'i').test(out.trim())) {
+      return fail(haiku ? { escalate: true } : { ok: false, text: 'Sonnet no ha querido responder; vuelve a preguntar.' });
+    }
+    if (code !== 0) return fail({ ok: false, text: msg.slice(0, 800) });
+    resolve({ ok: true, text: out.trim(), model: MODEL_NAMES[model], session: id });
   });
-  p.stdin.end(prompt);
-}));
+  p.stdin.end(question);
+});
 // Abre una terminal con "claude auth login" (el inicio de sesión se hace en el navegador)
 ipcMain.on('claude-login', () => {
   const exe = config.claudeCli || path.join(os.homedir(), '.local', 'bin', 'claude.exe');
@@ -904,6 +968,14 @@ function registerLauncherHotkey() {
     });
     log('atajo del buscador', key, ok ? 'activo' : 'NO DISPONIBLE (lo usa otra app)');
   } catch (e) { log('atajo del buscador no válido:', key, e.message); }
+  // Atajo para preguntar a la IA: abre el apartado de Claude con el cursor en "Pregúntale a…"
+  const ask = config.askHotkey;
+  if (ask && ask !== key) {
+    try {
+      const ok = globalShortcut.register(ask, () => { if (!hiddenForFullscreen) send('ask-hotkey'); });
+      log('atajo de la IA', ask, ok ? 'activo' : 'NO DISPONIBLE (lo usa otra app)');
+    } catch (e) { log('atajo de la IA no válido:', ask, e.message); }
+  }
 }
 
 app.whenReady().then(() => {

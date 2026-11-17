@@ -145,6 +145,7 @@ ventanas debajo sin tocar sus márgenes.
 | Abrir el panel | Clic en la isla |
 | Cerrar el panel | Clic fuera o Esc |
 | Buscador | **Ctrl+Q** desde cualquier sitio, o la lupa del panel |
+| Preguntar a la IA | **Alt+Q** desde cualquier sitio: abre "Pregúntale a Claude" listo para escribir |
 | Volumen | Rueda sobre la isla o sobre el icono de volumen |
 | Cambiar salida de audio | Clic en el icono de volumen |
 | Mezclador por app | Clic derecho en el icono de volumen |
@@ -172,6 +173,7 @@ Tras cambiarlo, recarga el notch (clic derecho → Recargar) o reinícialo para 
 | `tray` | `true` | Copiar los iconos de la bandeja del sistema |
 | `barTrayPins` | `[]` | Iconos fijados en la barra (se rellena desde la pestaña Bandeja) |
 | `launcherHotkey` | `"Alt+S"` | Atajo del buscador, en [formato de Electron](https://www.electronjs.org/docs/latest/api/accelerator) (`"Ctrl+Q"`, `"Ctrl+Shift+Space"`…) |
+| `askHotkey` | `"Alt+Q"` | Atajo para preguntar a la IA (vacío = sin atajo) |
 | `rim` | `true` | Borde visible alrededor del negro (útil en OLED) |
 | `rimStrength` | `1` | Intensidad del borde: `0.5` suave, `1` normal, `2` marcado |
 | `claudeCli` | `""` | Ruta a `claude.exe` para "Pregúntale a Claude" (vacío = `~/.local/bin/claude.exe`) |
@@ -228,6 +230,10 @@ Añade los hooks del notch a `~/.claude/settings.json`. La primera vez guarda un
   cerrado, no contestas o respondes en la terminal, Claude muestra su diálogo normal.
 - En **modo auto** Claude no pide permisos, así que no verás los botones; aparecen en las sesiones en modo normal.
 - **"Pregúntale a Claude"** usa tu CLI (`claude -p`) sin herramientas ni historial guardado.
+- Responde **Haiku** (rápido y barato). Si Haiku ve que la pregunta se complica (razonamiento de varios pasos,
+  código, análisis a fondo…), la pasa sola a **Sonnet**. En cada respuesta pone qué modelo contestó.
+- Cada conversación se **guarda** como sesión de Claude Code del proyecto **Notch** (la ves con `claude --resume`
+  desde esa carpeta). El botón ↗ la añade a la app de Claude y la abre; el notch empieza entonces una nueva.
 
 ---
 
